@@ -1,51 +1,150 @@
-Step-by-step setup
+# 🖥️ Homelab Dashboard — Setup Guide
 
-1 — Copy the files onto your server
-bash# From your PC, SCP the whole folder to your server
-scp -r homelab/ user@192.168.1.100:~/homelab
+A real-time system + services dashboard for your home server.  
+Backend runs on **port 8000** · Frontend runs on **port 3000**
 
-# Or if you're already on the server, just create the folder structure manually
+---
 
-2 — Install system dependencies (one time)
-bashsudo apt update
+## Before You Start
+
+Make sure you have these installed on your server:
+
+```bash
+sudo apt update
 sudo apt install python3 python3-pip python3-venv nodejs npm lm-sensors -y
+```
 
-# Optional: detect temperature sensors
+> **Optional — enable CPU temperature monitoring:**
+> ```bash
+> sudo sensors-detect --auto
+> ```
 
-sudo sensors-detect --auto
-3 — Run the automated setup script
-bashcd ~/homelab
+---
+
+## Setup
+
+### Step 1 — Copy files to your server
+
+From your local PC, transfer the project folder:
+
+```bash
+scp -r homelab/ user@192.168.1.100:~/homelab
+```
+
+Or if you're already logged into the server, place the files directly under `~/homelab/`.
+
+---
+
+### Step 2 — Run the setup script
+
+```bash
+cd ~/homelab
 chmod +x setup.sh
 ./setup.sh
-That's it. The script does everything — installs Python packages, builds the React app, sets your server's IP automatically, and registers two systemd services that start on boot.
-4 — Open the dashboard
-http://YOUR-SERVER-IP:3000
-The API runs on port 8000, the dashboard on port 3000.
+```
 
-Manual setup (if you prefer not to use the script)
-bash# Backend
+The script automatically:
+- Creates a Python virtual environment and installs backend dependencies
+- Detects your server's local IP and writes it into the frontend config
+- Builds the React frontend
+- Registers two systemd services that start on boot
+
+---
+
+### Step 3 — Open the dashboard
+
+Once the script finishes, open your browser to:
+
+```
+http://YOUR-SERVER-IP:3000
+```
+
+---
+
+## Manual Setup (no script)
+
+If you prefer to run things yourself, use two terminal windows:
+
+**Terminal 1 — Backend API**
+```bash
 cd ~/homelab
 python3 -m venv venv
 venv/bin/pip install -r backend/requirements.txt
 venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --app-dir backend
+```
 
-# Frontend (separate terminal)
-
+**Terminal 2 — Frontend**
+```bash
 cd ~/homelab/frontend
 echo "REACT_APP_API_URL=http://YOUR-SERVER-IP:8000" > .env
 npm install
 npm run build
 npx serve -s build -l 3000
+```
 
-Edit your services list
-bashnano ~/homelab/backend/services.json
-Just add/remove entries. The backend reloads the file on every /api/services request — no restart needed.
-Useful commands
-bashsudo systemctl status homelab-dashboard-api # is backend running?
-sudo journalctl -u homelab-dashboard-api -f # live backend logs
-sudo systemctl restart homelab-dashboard-api # restart after changes
-Notes
+> Replace `YOUR-SERVER-IP` with your actual server IP, e.g. `192.168.1.100`
 
-Temperature requires lm-sensors to be installed. It'll show "Not available" otherwise — no crash.
-Services are checked by actually doing an HTTP request to localhost:PORT. Any response (even a login page) = online. Timeout = offline.
-The API has a /docs page (Swagger UI) at http://YOUR-IP:8000/docs so you can inspect the raw data.
+---
+
+## Adding / Removing Services
+
+Edit the services config file — no restart required, the backend reloads it on every request:
+
+```bash
+nano ~/homelab/backend/services.json
+```
+
+Each service entry looks like this:
+
+```json
+{
+  "name": "Jellyfin",
+  "desc": "Media server",
+  "url": "http://localhost:8096",
+  "group": "Media",
+  "icon": "📺"
+}
+```
+
+| Field   | Required | Description |
+|---------|----------|-------------|
+| `name`  | ✅ | Display name |
+| `url`   | ✅ | Full URL the backend will ping to check status |
+| `group` | ✅ | Tab group — `Media`, `Network`, `Dev`, `Home`, or any custom label |
+| `desc`  | ❌ | Short description shown on the card |
+| `icon`  | ❌ | Any emoji |
+
+---
+
+## Useful Commands
+
+| What | Command |
+|------|---------|
+| Check backend status | `sudo systemctl status homelab-dashboard-api` |
+| Check frontend status | `sudo systemctl status homelab-dashboard-ui` |
+| View live backend logs | `sudo journalctl -u homelab-dashboard-api -f` |
+| Restart backend | `sudo systemctl restart homelab-dashboard-api` |
+| Restart frontend | `sudo systemctl restart homelab-dashboard-ui` |
+
+---
+
+## API Reference
+
+The backend exposes these endpoints (useful for debugging):
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /api/system` | CPU, RAM, disk, uptime, temperature, network I/O |
+| `GET /api/services` | Service list with live status and ping times |
+| `GET /api/health` | Simple `{ ok: true }` heartbeat |
+| `GET /docs` | Interactive Swagger UI for the API |
+
+Browse the API directly: `http://YOUR-SERVER-IP:8000/docs`
+
+---
+
+## Notes
+
+- **Temperature** shows "Not available" if `lm-sensors` isn't installed — the dashboard won't crash, it just skips that card.
+- **Service status** is determined by sending an HTTP request to `localhost:PORT`. Any response — even a login page or a 401 — counts as **online**. A timeout or connection refused = **offline**.
+- **Ping time** shown on each service card is the real round-trip time measured by the backend at check time.
