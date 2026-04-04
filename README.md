@@ -1,118 +1,114 @@
-# 🖥️ Homelab Dashboard — Setup Guide
+# 🖥️ Homelab Dashboard — k3s Setup Guide
 
-A real-time system + services dashboard for your home server.  
-Backend runs on **port 8000** · Frontend runs on **port 3000**
-
----
-
-## Before You Start
-
-Make sure you have these installed on your server:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-pip python3-venv nodejs npm lm-sensors -y
-```
-
-> **Optional — enable CPU temperature monitoring:**
-> ```bash
-> sudo sensors-detect --auto
-> ```
-
----
-
-## Setup
-
-### Step 1 — Copy files to your server
-
-From your local PC, transfer the project folder:
-
-```bash
-scp -r homelab/ user@192.168.1.100:~/homelab
-```
-
-Or if you're already logged into the server, place the files directly under `~/homelab/`.
-
----
-
-### Step 2 — Run the setup script
-
-```bash
-cd ~/homelab
-chmod +x setup.sh
-./setup.sh
-```
-
-The script automatically:
-- Creates a Python virtual environment and installs backend dependencies
-- Detects your server's local IP and writes it into the frontend config
-- Builds the React frontend
-- Registers two systemd services that start on boot
-
----
-
-### Step 3 — Open the dashboard
-
-Once the script finishes, open your browser to:
+Runs as two pods in a `homelab` namespace. The backend reads real host hardware metrics via mounted `/proc` and `/sys`. The frontend nginx proxies `/api/*` to the backend — no hardcoded IPs anywhere.
 
 ```
-http://YOUR-SERVER-IP:3000
+Browser → NodePort :30300 → frontend (nginx)
+                                ├── /          → React static files
+                                └── /api/*     → backend pod :8000
+                                                    ├── /api/system    (psutil → host /proc /sys)
+                                                    └── /api/services  (HTTP ping each service)
 ```
 
 ---
 
-## Manual Setup (no script)
+## Prerequisites
 
-If you prefer to run things yourself, use two terminal windows:
+Install these on your server if not already present:
 
-**Terminal 1 — Backend API**
 ```bash
-cd ~/homelab
-python3 -m venv venv
-venv/bin/pip install -r backend/requirements.txt
-venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --app-dir backend
-```
+# k3s
+curl -sfL https://get.k3s.io | sh -
 
-**Terminal 2 — Frontend**
-```bash
-cd ~/homelab/frontend
-echo "REACT_APP_API_URL=http://YOUR-SERVER-IP:8000" > .env
-npm install
-npm run build
-npx serve -s build -l 3000
+# Docker (needed to build images)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # then log out and back in
 ```
-
-> Replace `YOUR-SERVER-IP` with your actual server IP, e.g. `192.168.1.100`
 
 ---
 
-## Adding / Removing Services
+## Step-by-Step Deploy
 
-Edit the services config file — no restart required, the backend reloads it on every request:
+### Step 1 — Clone / copy the project onto your server
 
 ```bash
-nano ~/homelab/backend/services.json
+scp -r homelab-k3s/ user@192.168.1.100:~/homelab-k3s
+# or git clone, rsync, etc.
 ```
 
-Each service entry looks like this:
+### Step 2 — Edit your services list
 
+Open `k8s/01-configmap.yaml` and update the services to match what's actually running on your server:
+
+```bash
+nano ~/homelab-k3s/k8s/01-configmap.yaml
+```
+
+Each entry:
 ```json
-{
-  "name": "Jellyfin",
-  "desc": "Media server",
-  "url": "http://localhost:8096",
-  "group": "Media",
-  "icon": "📺"
-}
+{ "name": "Jellyfin", "desc": "Media server", "url": "http://localhost:8096", "group": "Media", "icon": "📺" }
 ```
 
-| Field   | Required | Description |
-|---------|----------|-------------|
-| `name`  | ✅ | Display name |
-| `url`   | ✅ | Full URL the backend will ping to check status |
-| `group` | ✅ | Tab group — `Media`, `Network`, `Dev`, `Home`, or any custom label |
-| `desc`  | ❌ | Short description shown on the card |
-| `icon`  | ❌ | Any emoji |
+> **Tip:** Use `localhost` URLs — the backend pod runs with `hostNetwork: true` so it sees your host's ports directly.
+
+### Step 3 — Run the deploy script
+
+```bash
+cd ~/homelab-k3s
+chmod +x deploy.sh
+./deploy.sh
+```
+
+This will:
+1. Build both Docker images
+2. Import them into k3s's containerd (k3s doesn't use Docker's image store)
+3. Apply all manifests in `k8s/`
+4. Wait for both pods to become ready
+
+### Step 4 — Open the dashboard
+
+```
+http://YOUR-SERVER-IP:30300
+```
+
+---
+
+## Updating Services (no rebuild needed)
+
+Edit the ConfigMap directly — changes take effect on the next `/api/services` poll:
+
+```bash
+sudo kubectl edit configmap homelab-services -n homelab
+```
+
+---
+
+## Updating Code
+
+After changing any source file, just re-run the deploy script:
+
+```bash
+./deploy.sh
+```
+
+It rebuilds the images, re-imports them, and does a rolling restart.
+
+---
+
+## Optional: Traefik Ingress (port 80)
+
+k3s ships with Traefik. Apply the ingress to get a clean URL on port 80:
+
+```bash
+sudo kubectl apply -f k8s/04-ingress.yaml
+```
+
+Then access at `http://YOUR-SERVER-IP` instead of `:30300`.
+
+To use a hostname like `homelab.local`, edit the `host:` field in `04-ingress.yaml` and add an entry to your router's DNS or your PC's `/etc/hosts`:
+```
+192.168.1.100   homelab.local
+```
 
 ---
 
@@ -120,31 +116,33 @@ Each service entry looks like this:
 
 | What | Command |
 |------|---------|
-| Check backend status | `sudo systemctl status homelab-dashboard-api` |
-| Check frontend status | `sudo systemctl status homelab-dashboard-ui` |
-| View live backend logs | `sudo journalctl -u homelab-dashboard-api -f` |
-| Restart backend | `sudo systemctl restart homelab-dashboard-api` |
-| Restart frontend | `sudo systemctl restart homelab-dashboard-ui` |
+| Check pod status | `sudo kubectl get pods -n homelab` |
+| Backend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
+| Frontend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
+| Describe a failing pod | `sudo kubectl describe pod -n homelab <pod-name>` |
+| Edit services live | `sudo kubectl edit configmap homelab-services -n homelab` |
+| Delete everything | `sudo kubectl delete namespace homelab` |
 
 ---
 
-## API Reference
+## How Host Metrics Work
 
-The backend exposes these endpoints (useful for debugging):
+The backend pod is configured with:
 
-| Endpoint | Returns |
-|----------|---------|
-| `GET /api/system` | CPU, RAM, disk, uptime, temperature, network I/O |
-| `GET /api/services` | Service list with live status and ping times |
-| `GET /api/health` | Simple `{ ok: true }` heartbeat |
-| `GET /docs` | Interactive Swagger UI for the API |
-
-Browse the API directly: `http://YOUR-SERVER-IP:8000/docs`
+| Setting | Why |
+|---------|-----|
+| `hostNetwork: true` | Sees host network interfaces → real I/O stats |
+| `hostPID: true` | Sees host processes → accurate CPU/load |
+| `/proc` mounted at `/host/proc` | psutil reads real host CPU, RAM, uptime |
+| `/sys` mounted at `/host/sys` | psutil reads real CPU temperature sensors |
+| `/` mounted at `/host/root` | psutil reads real disk usage |
+| `privileged: true` | Required to access the above |
 
 ---
 
 ## Notes
 
-- **Temperature** shows "Not available" if `lm-sensors` isn't installed — the dashboard won't crash, it just skips that card.
-- **Service status** is determined by sending an HTTP request to `localhost:PORT`. Any response — even a login page or a 401 — counts as **online**. A timeout or connection refused = **offline**.
-- **Ping time** shown on each service card is the real round-trip time measured by the backend at check time.
+- **Temperature** shows "Not available" if `lm-sensors` is not installed on the host. Everything else still works.
+- **Service URLs** should use `localhost` (not `127.0.0.1` or the node IP) because `hostNetwork: true` makes `localhost` resolve to the host.
+- **Multi-node clusters:** The backend only reads metrics from whichever node it's scheduled on. Pin it to a specific node with a `nodeSelector` in `k8s/02-backend.yaml` if needed.
+- **API docs:** The backend Swagger UI is only reachable from inside the cluster: `http://homelab-backend.homelab.svc:8000/docs`

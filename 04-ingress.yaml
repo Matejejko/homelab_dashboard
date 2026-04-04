@@ -1,0 +1,30 @@
+# Optional — gives you a clean URL instead of :30300
+# k3s ships with Traefik, so this works out of the box.
+#
+# With this applied, the dashboard is at:
+#   http://YOUR-NODE-IP/          (if you set host: "" or your hostname)
+#
+# To use a hostname, replace the host value below and add it to your
+# local DNS / /etc/hosts:
+#   192.168.1.100   homelab.local
+#
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: homelab-ingress
+  namespace: homelab
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+    # Leave host blank to match ANY hostname/IP, or set e.g. homelab.local
+    - host: ""
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: homelab-frontend
+                port:
+                  number: 3000

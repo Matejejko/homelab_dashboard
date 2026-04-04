@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homelab-backend
+  namespace: homelab
+  labels:
+    app: homelab-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homelab-backend
+  template:
+    metadata:
+      labels:
+        app: homelab-backend
+    spec:
+      # hostNetwork lets psutil see the host's network interfaces for real I/O stats
+      hostNetwork: true
+      # hostPID lets psutil see real host process info
+      hostPID: true
+
+      # Run on the node that actually owns the hardware.
+      # On a single-node k3s setup this is always satisfied.
+      # On multi-node, add a nodeSelector or pin with nodeName.
+      tolerations:
+        - operator: Exists
+
+      containers:
+        - name: backend
+          image: homelab-backend:latest
+          imagePullPolicy: Never     # image is loaded locally via k3s ctr
+
+          ports:
+            - containerPort: 8000
+
+          env:
+            # Tell main.py where to find host-mounted filesystems
+            - name: HOST_PROC
+              value: /host/proc
+            - name: HOST_SYS
+              value: /host/sys
+            - name: HOST_ROOT
+              value: /host/root
+            # services.json is mounted from the ConfigMap
+            - name: SERVICES_FILE
+              value: /config/services.json
+
+          volumeMounts:
+            # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+            # Host filesystem root — for disk usage stats
+            - name: host-root
+              mountPath: /host/root
+              readOnly: true
+              mountPropagation: HostToContainer
+            # services.json from ConfigMap
+            - name: services-config
+              mountPath: /config
+              readOnly: true
+
+          securityContext:
+            # Required to read host /proc and /sys
+            privileged: true
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-root
+          hostPath:
+            path: /
+        - name: services-config
+          configMap:
+            name: homelab-services
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homelab-backend
+  namespace: homelab
+spec:
+  selector:
+    app: homelab-backend
+  # ClusterIP is enough — the frontend nginx proxy talks to this internally.
+  # The backend never needs to be directly exposed to the browser.
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
