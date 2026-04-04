@@ -1,10 +1,12 @@
 """
 Homelab Dashboard — Backend API (k3s edition)
 Reads host system stats via mounted /proc and /sys volumes.
-Services config is loaded from /config/services.json (a ConfigMap mount).
+Services are auto-discovered from Kubernetes Ingress annotations
+(homelab-dashboard/enabled: "true"), with a fallback to /config/services.json.
 """
 
 import json
+import logging
 import os
 import time
 import asyncio
@@ -14,6 +16,8 @@ import psutil
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger(__name__)
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Homelab Dashboard API")
@@ -40,13 +44,72 @@ HOST_ROOT = os.environ.get("HOST_ROOT", "/")      # base for disk partitions
 # Tell psutil to use our (possibly remapped) /proc
 os.environ["PROC_PATH"] = HOST_PROC   # psutil respects this on Linux
 
-# Services list comes from a ConfigMap mounted at /config/services.json
-# Fall back to a local file for development
+# Services list — auto-discovered from k8s Ingress annotations when running
+# in-cluster, with fallback to /config/services.json (ConfigMap mount) or a
+# local services.json for development.
 SERVICES_FILE = Path(os.environ.get("SERVICES_FILE", "/config/services.json"))
 if not SERVICES_FILE.exists():
     SERVICES_FILE = Path(__file__).parent / "services.json"
 
+_ANN = "homelab-dashboard"  # annotation prefix
+
+def _services_from_k8s() -> list[dict] | None:
+    """
+    Auto-discover services from all Kubernetes Ingresses cluster-wide.
+    Returns None if the k8s API is unreachable (e.g. local dev).
+
+    Every Ingress is included unless opted out with:
+        homelab-dashboard/enabled: "false"
+
+    Optionally override display fields with annotations:
+        homelab-dashboard/name:  "Jellyfin"
+        homelab-dashboard/desc:  "Media server"
+        homelab-dashboard/group: "Media"
+        homelab-dashboard/icon:  "📺"
+        homelab-dashboard/url:   "http://..."   # overrides auto-detected URL
+    """
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        k8s_config.load_incluster_config()
+        api = k8s_client.NetworkingV1Api()
+        ingresses = api.list_ingress_for_all_namespaces(timeout_seconds=5)
+    except Exception as exc:
+        logger.debug("k8s discovery unavailable: %s", exc)
+        return None
+
+    services: list[dict] = []
+    for ing in ingresses.items:
+        ann = ing.metadata.annotations or {}
+        if ann.get(f"{_ANN}/enabled") == "false":
+            continue
+
+        # Auto-detect URL from ingress spec unless overridden
+        url = ann.get(f"{_ANN}/url")
+        if not url and ing.spec and ing.spec.rules:
+            rule = ing.spec.rules[0]
+            host = rule.host or "localhost"
+            path = ""
+            if rule.http and rule.http.paths:
+                p = rule.http.paths[0].path
+                if p and p not in ("/", "/*"):
+                    path = p.rstrip("/*")
+            scheme = "https" if ing.spec.tls else "http"
+            url = f"{scheme}://{host}{path}"
+
+        services.append({
+            "name":  ann.get(f"{_ANN}/name",  ing.metadata.name),
+            "desc":  ann.get(f"{_ANN}/desc",  ""),
+            "url":   url or "",
+            "group": ann.get(f"{_ANN}/group", ing.metadata.namespace),
+            "icon":  ann.get(f"{_ANN}/icon",  "🔧"),
+        })
+
+    return services
+
 def load_services() -> list[dict]:
+    k8s = _services_from_k8s()
+    if k8s is not None:
+        return k8s
     with open(SERVICES_FILE) as f:
         return json.load(f)
 

@@ -1,3 +1,36 @@
+# ServiceAccount for the backend pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homelab-backend
+  namespace: homelab
+
+---
+# Allow the backend to list Ingresses cluster-wide (for service auto-discovery)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: homelab-backend-ingress-reader
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: homelab-backend-ingress-reader
+subjects:
+  - kind: ServiceAccount
+    name: homelab-backend
+    namespace: homelab
+roleRef:
+  kind: ClusterRole
+  name: homelab-backend-ingress-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +48,7 @@ spec:
       labels:
         app: homelab-backend
     spec:
+      serviceAccountName: homelab-backend
       # hostNetwork lets psutil see the host's network interfaces for real I/O stats
       hostNetwork: true
       # hostPID lets psutil see real host process info
