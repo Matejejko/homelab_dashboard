@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import socket
-import struct
 import time
 import asyncio
 from pathlib import Path
@@ -469,6 +468,8 @@ async def get_services():
 
 # ─── Device detection ────────────────────────────────────────────────────────
 
+import subprocess
+
 _geo_cache: dict[str, dict] = {}   # ip → {lat, lng, city, country, ts}
 _GEO_TTL = 300  # 5 minutes
 
@@ -504,10 +505,57 @@ def _is_client_ip(ip_str: str, local_ips: set[str]) -> bool:
     return True
 
 
-def _parse_conntrack(local_ips: set[str]) -> dict[str, set[int]]:
-    """Parse nf_conntrack for ESTABLISHED inbound TCP connections.
-    Returns {client_ip: {dest_ports}}."""
-    # Try multiple paths — some systems vary
+def _parse_conntrack_line(line: str, local_ips: set[str]) -> tuple[str, int] | None:
+    """Parse a single conntrack line, return (client_ip, dest_port) or None.
+    Only returns inbound connections (src is a client, not our server)."""
+    if "ESTABLISHED" not in line or "tcp" not in line:
+        return None
+
+    # Extract key=value pairs — first occurrence = original direction
+    kv: dict[str, str] = {}
+    for token in line.split():
+        if "=" in token:
+            k, v = token.split("=", 1)
+            if k not in kv:
+                kv[k] = v
+
+    src = kv.get("src", "")
+    dport = kv.get("dport", "")
+    if not src or not dport:
+        return None
+    if not _is_client_ip(src, local_ips):
+        return None
+
+    return (src, int(dport))
+
+
+def _conntrack_from_cli(local_ips: set[str]) -> dict[str, set[int]]:
+    """Run `conntrack -L` CLI to get connection tracking entries.
+    This is the most reliable method — sees through kube-proxy NAT."""
+    result: dict[str, set[int]] = {}
+    try:
+        proc = subprocess.run(
+            ["conntrack", "-L", "-p", "tcp", "--state", "ESTABLISHED"],
+            capture_output=True, text=True, timeout=5,
+        )
+        lines = proc.stdout.splitlines()
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.debug("conntrack CLI not available: %s", exc)
+        return result
+
+    for line in lines:
+        parsed = _parse_conntrack_line(line, local_ips)
+        if parsed:
+            src, dport = parsed
+            result.setdefault(src, set()).add(dport)
+
+    logger.debug("conntrack CLI found %d client IPs", len(result))
+    return result
+
+
+def _conntrack_from_proc(local_ips: set[str]) -> dict[str, set[int]]:
+    """Parse /proc/net/nf_conntrack (fallback for older kernels)."""
+    result: dict[str, set[int]] = {}
     for ct_name in ("nf_conntrack", "ip_conntrack"):
         ct_path = Path(HOST_PROC) / "net" / ct_name
         try:
@@ -516,137 +564,35 @@ def _parse_conntrack(local_ips: set[str]) -> dict[str, set[int]]:
         except OSError:
             lines = []
 
-    if not lines:
-        logger.debug("conntrack not available at %s/net/nf_conntrack", HOST_PROC)
-        return {}
-
-    result: dict[str, set[int]] = {}
     for line in lines:
-        if "ESTABLISHED" not in line or "tcp" not in line:
-            continue
+        parsed = _parse_conntrack_line(line, local_ips)
+        if parsed:
+            src, dport = parsed
+            result.setdefault(src, set()).add(dport)
 
-        # Extract key=value pairs — first occurrence = original direction
-        kv: dict[str, str] = {}
-        for token in line.split():
-            if "=" in token:
-                k, v = token.split("=", 1)
-                if k not in kv:
-                    kv[k] = v
-
-        src = kv.get("src", "")
-        dport = kv.get("dport", "")
-        if not src or not dport:
-            continue
-        if not _is_client_ip(src, local_ips):
-            continue
-
-        port = int(dport)
-        if src not in result:
-            result[src] = set()
-        result[src].add(port)
-
-    logger.debug("conntrack found %d client IPs", len(result))
-    return result
-
-
-def _parse_tcp_file(tcp_path: Path, local_ips: set[str]) -> dict[str, set[int]]:
-    """Parse a /proc/*/net/tcp file. Returns {remote_ip: {local_ports}}."""
-    result: dict[str, set[int]] = {}
-    try:
-        lines = tcp_path.read_text().splitlines()[1:]
-    except OSError:
-        return result
-
-    for line in lines:
-        parts = line.split()
-        if len(parts) < 4 or parts[3] != "01":
-            continue
-
-        local_hex, remote_hex = parts[1], parts[2]
-        local_port = int(local_hex.split(":")[1], 16)
-
-        r_ip_hex, _ = remote_hex.split(":")
-        r_ip_int = struct.unpack("<I", bytes.fromhex(r_ip_hex))[0]
-        r_ip = str(ipaddress.IPv4Address(r_ip_int))
-
-        if not _is_client_ip(r_ip, local_ips):
-            continue
-
-        if r_ip not in result:
-            result[r_ip] = set()
-        result[r_ip].add(local_port)
-
-    return result
-
-
-def _scan_all_net_namespaces(local_ips: set[str]) -> dict[str, set[int]]:
-    """Scan /proc/<pid>/net/tcp across all unique network namespaces.
-    Requires hostPID: true to see other pods' namespaces."""
-    proc_base = Path(HOST_PROC)
-    seen_ns: set[int] = set()
-    result: dict[str, set[int]] = {}
-
-    # Iterate over all PIDs
-    try:
-        pid_dirs = [d for d in proc_base.iterdir() if d.name.isdigit()]
-    except OSError:
-        return result
-
-    for pid_dir in pid_dirs:
-        # Deduplicate by network namespace inode
-        ns_path = pid_dir / "ns" / "net"
-        try:
-            ns_inode = ns_path.stat().st_ino
-        except OSError:
-            continue
-
-        if ns_inode in seen_ns:
-            continue
-        seen_ns.add(ns_inode)
-
-        # Parse this namespace's TCP table
-        tcp_path = pid_dir / "net" / "tcp"
-        ns_conns = _parse_tcp_file(tcp_path, local_ips)
-        for ip, ports in ns_conns.items():
-            if ip in result:
-                result[ip].update(ports)
-            else:
-                result[ip] = set(ports)
-
-    logger.debug("namespace scan: %d namespaces, %d client IPs", len(seen_ns), len(result))
     return result
 
 
 def _detect_connections() -> dict[str, set[int]]:
-    """Detect inbound client connections using best available method(s).
+    """Detect inbound client connections via conntrack.
 
-    1. conntrack — sees all NATted connections (kube-proxy DNAT to pods)
-    2. namespace scan — reads /proc/<pid>/net/tcp for every unique net ns
-    3. host /proc/net/tcp — fallback
-
-    Results are merged so we catch as many real clients as possible.
+    conntrack is the only reliable way to see through kube-proxy SNAT/DNAT.
+    Tries CLI first (newer kernels), then proc file (older kernels).
     """
     local_ips = _get_local_ips()
-    result: dict[str, set[int]] = {}
 
-    # Method 1: conntrack (best — sees through kube-proxy NAT)
-    ct = _parse_conntrack(local_ips)
-    for ip, ports in ct.items():
-        result.setdefault(ip, set()).update(ports)
+    # Try conntrack CLI first (works on newer kernels where proc file is gone)
+    result = _conntrack_from_cli(local_ips)
+    if result:
+        return result
 
-    # Method 2: scan all network namespaces (catches pod-level connections)
-    ns = _scan_all_net_namespaces(local_ips)
-    for ip, ports in ns.items():
-        result.setdefault(ip, set()).update(ports)
+    # Fallback: proc file (older kernels)
+    result = _conntrack_from_proc(local_ips)
+    if result:
+        return result
 
-    # Method 3: host /proc/net/tcp (fallback if above found nothing)
-    if not result:
-        host_tcp = _parse_tcp_file(Path(HOST_PROC) / "net" / "tcp", local_ips)
-        for ip, ports in host_tcp.items():
-            result.setdefault(ip, set()).update(ports)
-
-    logger.debug("total detected: %d client IPs", len(result))
-    return result
+    logger.warning("No conntrack available — device detection will be incomplete")
+    return {}
 
 
 async def _geolocate_ips(ips: list[str]) -> dict[str, dict]:
