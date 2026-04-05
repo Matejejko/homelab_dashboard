@@ -701,7 +701,6 @@ export default function App() {
         // Merge auto-detected devices (from API) with manual devices (from settings)
         const mapDevices = [
           ...autoDevices.map(d => {
-            // WAN devices use their geolocated position; LAN/Tailscale/ZeroTier cluster near server
             const hasGeo = d.lat && d.lng;
             const nearServer = (sLoc.lat || sLoc.lng) && !hasGeo;
             return {
