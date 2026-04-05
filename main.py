@@ -61,6 +61,10 @@ if not LAN_IP:
 ZT_IP = os.environ.get("DASHBOARD_ZT_IP", "")
 TS_IP = os.environ.get("DASHBOARD_TS_IP", "")
 
+# Disk filter — comma-separated mount points or device names to show.
+# Empty = show all real block devices. Example: "/, /home, /data"
+DASHBOARD_DISKS = os.environ.get("DASHBOARD_DISKS", "")
+
 # ─── Image-based service identification ──────────────────────────────────────
 # Maps a keyword found in Docker image names or k8s service names to display info.
 # Only used for pretty names and icons — does NOT add phantom services.
@@ -348,6 +352,12 @@ def _host_disks() -> list[dict]:
         if dev in seen_devs:
             continue
         seen_devs.add(dev)
+
+        # If DASHBOARD_DISKS is set, only include matching mounts or devices
+        if DASHBOARD_DISKS:
+            allowed = {d.strip() for d in DASHBOARD_DISKS.split(",") if d.strip()}
+            if mount not in allowed and dev not in allowed:
+                continue
 
         probe = str(Path(HOST_ROOT) / mount.lstrip("/")) if HOST_ROOT != "/" else mount
         try:

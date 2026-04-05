@@ -35,22 +35,30 @@ git clone https://github.com/Matejejko/homelab_dashboard.git
 cd homelab_dashboard
 ```
 
-### 2 — Configure your IPs
+### 2 — Configure your environment
 
-Edit `02-backend.yaml` and set these environment variables:
+Edit `02-backend.yaml` and set the environment variables under the `env:` section:
 
 ```yaml
-- name: DASHBOARD_LAN_IP
-  value: "192.168.0.101"       # ← your server's LAN IP
-- name: DASHBOARD_ZT_IP
-  value: ""                    # ← your ZeroTier IP (or leave empty)
-- name: DASHBOARD_TS_IP
-  value: ""                    # ← your Tailscale IP (or leave empty)
+env:
+  # ... (HOST_PROC, HOST_SYS, HOST_ROOT, SERVICES_FILE are pre-set)
+
+  # ── Your server's LAN IP (used in service URLs) ──
+  - name: DASHBOARD_LAN_IP
+    value: "192.168.0.101"
+
+  # ── ZeroTier IP (leave empty to show button as disabled) ──
+  - name: DASHBOARD_ZT_IP
+    value: ""
+
+  # ── Tailscale IP (leave empty to show button as disabled) ──
+  - name: DASHBOARD_TS_IP
+    value: ""
+
+  # ── Disk filter (see "Disk Monitoring" section below) ──
+  - name: DASHBOARD_DISKS
+    value: ""
 ```
-
-These IPs are used by the frontend to build access URLs for each service. Each service card gets a **LAN** button, and optionally **ZeroTier** and **Tailscale** buttons if those IPs are set.
-
-You can also change them later via the **Settings** button in the dashboard UI (saved to browser localStorage).
 
 ### 3 — Run the deploy script
 
@@ -67,19 +75,69 @@ http://YOUR-SERVER-IP:30300
 
 ---
 
+## Configuration Reference
+
+All configuration is done via environment variables in `02-backend.yaml`.
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `DASHBOARD_LAN_IP` | auto-detect | Your server's LAN IP for service URLs |
+| `DASHBOARD_ZT_IP` | *(empty)* | ZeroTier IP — leave empty to disable ZT button |
+| `DASHBOARD_TS_IP` | *(empty)* | Tailscale IP — leave empty to disable TS button |
+| `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names to monitor |
+
+You can also override LAN/ZT/TS IPs from the dashboard UI via **Settings** (saved to browser localStorage).
+
+After changing env vars, redeploy:
+```bash
+./deploy.sh
+```
+
+---
+
+## Disk Monitoring
+
+By default, the dashboard shows **all real block-device filesystems** detected on the host (ext4, xfs, btrfs, etc.). Container overlays, tmpfs, and virtual filesystems are filtered out.
+
+### Filtering to specific disks
+
+Set `DASHBOARD_DISKS` in `02-backend.yaml` to show only the disks you care about:
+
+```yaml
+# Show only root and /home:
+- name: DASHBOARD_DISKS
+  value: "/, /home"
+
+# Show by device name:
+- name: DASHBOARD_DISKS
+  value: "/dev/sda1, /dev/nvme0n1p2"
+
+# Show all (default — leave empty):
+- name: DASHBOARD_DISKS
+  value: ""
+```
+
+The filter matches against **mount point** (e.g. `/`, `/home`, `/data`) or **device name** (e.g. `/dev/sda1`). Comma-separated, spaces are trimmed.
+
+### How it works
+
+The backend reads the host's real mount table from `/host/proc/1/mounts` (PID 1 = host init process), bypassing the container's mount namespace. Disk usage is probed through the host root mount at `/host/root`.
+
+---
+
 ## Service Auto-Discovery
 
 Services are discovered automatically from **three sources** — no manual config needed:
 
 ### 1. Kubernetes Services
-Every Service in the cluster is detected (except `kube-system` internals and the dashboard itself):
+Every Service in the cluster is detected (except `kube-system` and the dashboard itself):
 - **NodePort** → `http://LAN_IP:<nodePort>`
 - **LoadBalancer** → external IP + port
 - **ClusterIP + Ingress** → Ingress URL
 - **ClusterIP without Ingress** → skipped (internal only)
 
 ### 2. Docker Containers
-Any running Docker container with a published host port is detected via `/var/run/docker.sock`. Service names and icons are matched from the Docker image name (e.g., `linuxserver/jellyfin` is identified as Jellyfin).
+Any running Docker container with a published host port is detected via `/var/run/docker.sock`. Service names and icons are matched from the Docker image name (e.g., `linuxserver/jellyfin` is identified as "Jellyfin").
 
 ### 3. ConfigMap (manual additions)
 For services that can't be auto-detected:
@@ -88,24 +146,43 @@ For services that can't be auto-detected:
 sudo kubectl edit configmap homelab-services -n homelab
 ```
 
-### Customizing display
+---
 
-**k8s Services** — annotations:
-```yaml
-annotations:
-  homelab-dashboard/name: "Jellyfin"
-  homelab-dashboard/icon: "📺"
-  homelab-dashboard/group: "Media"
-  homelab-dashboard/enabled: "false"   # hide
-```
+## Editing Services in the Dashboard
 
-**Docker containers** — labels:
+Click the **pencil icon** on any service card to edit:
+
+- **Display name** — override the auto-detected name
+- **Icon** — set a custom emoji
+- **Description** — add or change the description
+- **Service info** — read-only panel showing the original name, port, URL, and auto-detected group
+
+Click **Reset to Default** to remove all overrides for that service.
+
+All customizations are saved to your browser's localStorage.
+
+### Customizing via Docker labels / k8s annotations
+
+You can also customize services at the infrastructure level:
+
+**Docker containers** — add labels to your docker-compose:
 ```yaml
 labels:
   homelab-dashboard.name: "Jellyfin"
   homelab-dashboard.icon: "📺"
+  homelab-dashboard.desc: "Media server"
   homelab-dashboard.group: "Media"
-  homelab-dashboard.enabled: "false"   # hide
+  homelab-dashboard.enabled: "false"   # hide this container
+```
+
+**k8s Services** — add annotations:
+```yaml
+annotations:
+  homelab-dashboard/name: "Jellyfin"
+  homelab-dashboard/icon: "📺"
+  homelab-dashboard/desc: "Media server"
+  homelab-dashboard/group: "Media"
+  homelab-dashboard/enabled: "false"   # hide this service
 ```
 
 ---
@@ -125,17 +202,21 @@ Group layout is saved to your browser's localStorage.
 
 ## Multi-Network Access (LAN / ZeroTier / Tailscale)
 
-Each service card shows access buttons based on your configured IPs:
+Each service card shows three access buttons:
 
-| Button | When shown | URL format |
-|--------|-----------|------------|
-| **LAN** | Always (if LAN IP set) | `http://<LAN_IP>:<port>` |
-| **ZeroTier** | Only if ZT IP configured | `http://<ZT_IP>:<port>` |
-| **Tailscale** | Only if TS IP configured | `http://<TS_IP>:<port>` |
+| Button | Color | When active | URL format |
+|--------|-------|-------------|------------|
+| **LAN** | Blue | LAN IP is set | `http://<LAN_IP>:<port>` |
+| **ZeroTier** | Orange | ZT IP is set | `http://<ZT_IP>:<port>` |
+| **Tailscale** | Purple | TS IP is set | `http://<TS_IP>:<port>` |
 
-Configure IPs in:
-- **`02-backend.yaml`** → env vars `DASHBOARD_LAN_IP`, `DASHBOARD_ZT_IP`, `DASHBOARD_TS_IP`
-- **Dashboard Settings** button → overrides stored in browser localStorage
+Buttons are always visible. If the corresponding IP is not configured, the button appears grayed out with a tooltip prompting you to set the IP in Settings.
+
+Configure IPs:
+1. **`02-backend.yaml`** → env vars (server-side defaults)
+2. **Dashboard Settings button** → browser-side overrides (localStorage)
+
+A **Network IPs** card in the system stats section shows all configured IPs at a glance.
 
 ---
 
@@ -144,6 +225,16 @@ Configure IPs in:
 ```bash
 ./deploy.sh
 ```
+
+---
+
+## Optional: Traefik Ingress (port 80)
+
+```bash
+sudo kubectl apply -f 04-ingress.yaml
+```
+
+Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 
 ---
 
@@ -182,17 +273,18 @@ homelab_dashboard/
 ├── Dockerfile                       # Backend image
 ├── requirements.txt
 ├── package.json                     # Frontend React deps
-├── src/                             # Frontend source
-├── public/                          # Frontend static
+├── src/App.js                       # Frontend UI (drag-drop, edit, settings)
+├── src/index.js                     # React entry point
+├── public/index.html                # HTML template
 ├── nginx.conf                       # Frontend nginx proxy config
 ├── mnt/.../frontend/Dockerfile      # Frontend multi-stage build
 ├── deploy.sh                        # One-command build & deploy
 ├── services.json                    # Local dev fallback (empty)
-├── 00-namespace.yaml
+├── 00-namespace.yaml                # k8s Namespace
 ├── 01-configmap.yaml                # Manual service additions (empty)
-├── 02-backend.yaml                  # Backend + RBAC + IP config
-├── 03-frontend.yaml                 # Frontend + NodePort
-└── 04-ingress.yaml                  # Optional Traefik Ingress
+├── 02-backend.yaml                  # Backend + RBAC + all config env vars
+├── 03-frontend.yaml                 # Frontend + NodePort :30300
+└── 04-ingress.yaml                  # Optional Traefik Ingress (port 80)
 ```
 
 ---
@@ -200,6 +292,7 @@ homelab_dashboard/
 ## Notes
 
 - **Temperature** shows "Not available" if `lm-sensors` is not installed on the host.
-- **Disk panel** reads `/host/proc/1/mounts` to show only real host filesystems — container overlays are filtered out.
+- **Disk panel** reads from `/host/proc/1/mounts`. Filter with `DASHBOARD_DISKS` env var.
 - **Service URLs** use the configured `DASHBOARD_LAN_IP` instead of localhost.
 - **Multi-node clusters:** Pin the backend to a specific node with a `nodeSelector` in `02-backend.yaml`.
+- **Live clock** is displayed in the top-right corner of the dashboard.

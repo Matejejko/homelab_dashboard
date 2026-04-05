@@ -96,6 +96,10 @@ spec:
             # Set your Tailscale IP (leave empty to hide TS button)
             - name: DASHBOARD_TS_IP
               value: ""
+            # Disk filter — comma-separated mount points or device names.
+            # Empty = show all real block devices. Example: "/, /home, /data"
+            - name: DASHBOARD_DISKS
+              value: ""
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here

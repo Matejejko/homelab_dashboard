@@ -65,6 +65,8 @@ const S = {
   netInfoLabel: { fontSize: '0.72rem', fontWeight: 600, minWidth: '70px' },
   netInfoVal: { fontSize: '0.82rem', color: '#f1f5f9', fontFamily: 'monospace' },
   netInfoNone: { fontSize: '0.82rem', color: '#334155', fontStyle: 'italic' },
+  editBtn: { background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '0.72rem', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px' },
+  svcInfoRow: { fontSize: '0.7rem', color: '#475569', marginTop: '2px', fontFamily: 'monospace', wordBreak: 'break-all' },
   // modal
   overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
   modal: { background: '#1e2130', border: '1px solid #2d3148', borderRadius: '14px', padding: '24px', minWidth: '340px', maxWidth: '90vw' },
@@ -205,8 +207,70 @@ function SettingsModal({ net, onSave, onClose }) {
   );
 }
 
+// ── Service Edit Modal ─────────────────────────────────────────────────────
+function ServiceEditModal({ svc, overrides, onSave, onClose }) {
+  const existing = overrides[svc.name] || {};
+  const [name, setName] = useState(existing.name || svc.name);
+  const [icon, setIcon] = useState(existing.icon || svc.icon || '');
+  const [desc, setDesc] = useState(existing.desc || svc.desc || '');
+
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.modal} onClick={e => e.stopPropagation()}>
+        <div style={S.modalTitle}>Edit Service</div>
+
+        <label style={S.label}>Display Name</label>
+        <input style={S.input} value={name} onChange={e => setName(e.target.value)} />
+
+        <label style={S.label}>Icon (emoji)</label>
+        <input style={S.input} value={icon} onChange={e => setIcon(e.target.value)} placeholder="e.g. 📺" />
+
+        <label style={S.label}>Description</label>
+        <input style={S.input} value={desc} onChange={e => setDesc(e.target.value)} placeholder="e.g. Media server" />
+
+        {/* Read-only info */}
+        <div style={{ marginTop: '16px', padding: '10px', background: '#0f1117', borderRadius: '8px', border: '1px solid #1e2130' }}>
+          <div style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 600, marginBottom: '6px', textTransform: 'uppercase' }}>Service Info</div>
+          <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '3px' }}>
+            <span style={{ color: '#64748b' }}>Original name: </span>{svc.name}
+          </div>
+          {svc.port && <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '3px' }}>
+            <span style={{ color: '#64748b' }}>Port: </span>{svc.port}
+          </div>}
+          {svc.url && <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '3px', wordBreak: 'break-all' }}>
+            <span style={{ color: '#64748b' }}>URL: </span>{svc.url}
+          </div>}
+          {svc.group && <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '3px' }}>
+            <span style={{ color: '#64748b' }}>Auto-detected group: </span>{svc.group}
+          </div>}
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '18px', justifyContent: 'flex-end' }}>
+          <button style={S.btn} onClick={() => {
+            const next = { ...overrides };
+            delete next[svc.name];
+            onSave(next);
+            onClose();
+          }}>Reset to Default</button>
+          <button style={S.btn} onClick={onClose}>Cancel</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => {
+            const next = { ...overrides, [svc.name]: { name: name.trim() || svc.name, icon: icon || svc.icon, desc } };
+            onSave(next);
+            onClose();
+          }}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Service Card ───────────────────────────────────────────────────────────
-function ServiceCard({ svc, netCfg, onDragStart }) {
+function ServiceCard({ svc, netCfg, overrides, onDragStart, onEdit }) {
+  const ovr = overrides[svc.name] || {};
+  const displayName = ovr.name || svc.name;
+  const displayIcon = ovr.icon || svc.icon || '🔧';
+  const displayDesc = ovr.desc != null ? ovr.desc : svc.desc;
+
   const online = svc.status === 'online';
   const port = svc.port;
   const { lanIp, ztIp, tsIp } = netCfg;
@@ -222,12 +286,14 @@ function ServiceCard({ svc, netCfg, onDragStart }) {
       onDragStart={e => { e.dataTransfer.setData('text/plain', svc.name); onDragStart && onDragStart(svc.name); }}
     >
       <div style={S.svcTop}>
-        <span style={S.svcIcon}>{svc.icon || '🔧'}</span>
-        <span style={S.svcName}>{svc.name}</span>
+        <span style={S.svcIcon}>{displayIcon}</span>
+        <span style={S.svcName}>{displayName}</span>
+        <button style={S.editBtn} onClick={() => onEdit(svc)} title="Edit service">&#9998;</button>
         <span style={{ ...S.dot, background: online ? '#22c55e' : '#ef4444' }} />
       </div>
-      {svc.desc && <div style={S.svcDesc}>{svc.desc}</div>}
+      {displayDesc && <div style={S.svcDesc}>{displayDesc}</div>}
       {svc.ping_ms != null && <div style={S.ping}>{svc.ping_ms} ms</div>}
+      {port && <div style={S.svcInfoRow}>:{port}</div>}
       <div style={S.svcBtns}>
         {lanUrl
           ? <a href={lanUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.lanBtn }}>LAN</a>
@@ -244,7 +310,7 @@ function ServiceCard({ svc, netCfg, onDragStart }) {
 }
 
 // ── Group Section ──────────────────────────────────────────────────────────
-function GroupSection({ name, services, netCfg, onDrop, onRename, onDelete, onDragStartSvc }) {
+function GroupSection({ name, services, netCfg, overrides, onDrop, onRename, onDelete, onDragStartSvc, onEditSvc }) {
   const [over, setOver] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editVal, setEditVal] = useState(name);
@@ -282,7 +348,7 @@ function GroupSection({ name, services, netCfg, onDrop, onRename, onDelete, onDr
         onDragLeave={() => setOver(false)}
         onDrop={e => { e.preventDefault(); setOver(false); const svcName = e.dataTransfer.getData('text/plain'); if (svcName) onDrop(svcName, name); }}
       >
-        {services.map(svc => <ServiceCard key={svc.name} svc={svc} netCfg={netCfg} onDragStart={onDragStartSvc} />)}
+        {services.map(svc => <ServiceCard key={svc.name} svc={svc} netCfg={netCfg} overrides={overrides} onDragStart={onDragStartSvc} onEdit={onEditSvc} />)}
         {services.length === 0 && <div style={{ color: '#334155', fontSize: '0.8rem', padding: '16px', gridColumn: '1/-1', textAlign: 'center', fontStyle: 'italic' }}>Drag services here</div>}
       </div>
     </div>
@@ -298,14 +364,16 @@ export default function App() {
   const [sysErr, setSysErr]     = useState(null);
   const [svcErr, setSvcErr]     = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [editingSvc, setEditingSvc] = useState(null); // service being edited
 
-  // Layout: { groups: string[], assignments: {svcName: groupName}, networkConfig: {lanIp, ztIp, tsIp} }
+  // Layout: { groups, assignments, networkConfig, serviceOverrides }
   const [layout, setLayout] = useState(() => {
     const saved = loadLayout();
     return {
       groups: saved.groups || [],
       assignments: saved.assignments || {},
       networkConfig: saved.networkConfig || { lanIp: '', ztIp: '', tsIp: '' },
+      serviceOverrides: saved.serviceOverrides || {},
     };
   });
 
@@ -406,6 +474,10 @@ export default function App() {
     persist(prev => ({ ...prev, networkConfig: cfg }));
   };
 
+  const saveServiceOverrides = (overrides) => {
+    persist(prev => ({ ...prev, serviceOverrides: overrides }));
+  };
+
   // Build grouped services
   const grouped = {};
   for (const g of layout.groups) grouped[g] = [];
@@ -433,6 +505,7 @@ export default function App() {
       </div>
 
       {showSettings && <SettingsModal net={layout.networkConfig} onSave={saveNetConfig} onClose={() => setShowSettings(false)} />}
+      {editingSvc && <ServiceEditModal svc={editingSvc} overrides={layout.serviceOverrides} onSave={saveServiceOverrides} onClose={() => setEditingSvc(null)} />}
 
       {sysErr && <div style={S.error}>System API: {sysErr}</div>}
 
@@ -466,9 +539,11 @@ export default function App() {
           name={group}
           services={svcs}
           netCfg={layout.networkConfig}
+          overrides={layout.serviceOverrides}
           onDrop={moveService}
           onRename={renameGroup}
           onDelete={deleteGroup}
+          onEditSvc={svc => setEditingSvc(svc)}
         />
       ))}
 
