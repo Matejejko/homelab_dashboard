@@ -6,12 +6,15 @@ metadata:
   namespace: homelab
 
 ---
-# Allow the backend to list Ingresses cluster-wide (for service auto-discovery)
+# Allow the backend to list Services and Ingresses cluster-wide (auto-discovery)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: homelab-backend-ingress-reader
 rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
@@ -40,6 +43,10 @@ metadata:
     app: homelab-backend
 spec:
   replicas: 1
+  # hostNetwork: true means both old and new pods would fight over port 8000
+  # on the host — Recreate stops the old pod before starting the new one.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: homelab-backend
@@ -97,6 +104,9 @@ spec:
             - name: services-config
               mountPath: /config
               readOnly: true
+            # Docker socket — for container auto-discovery
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
 
           securityContext:
             # Required to read host /proc and /sys
@@ -134,6 +144,10 @@ spec:
         - name: host-root
           hostPath:
             path: /
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
         - name: services-config
           configMap:
             name: homelab-services

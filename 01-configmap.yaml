@@ -4,19 +4,10 @@ metadata:
   name: homelab-services
   namespace: homelab
   annotations:
-    # Edit this ConfigMap to add/remove services.
+    # Services are auto-discovered from k8s Services and Docker containers.
+    # Add entries here only for services that can't be auto-detected
+    # (e.g. running on a different host, bare-metal process without Docker).
     # Changes take effect on the next /api/services poll (no pod restart needed).
 data:
   services.json: |
-    [
-      { "name": "Jellyfin",       "desc": "Media server",      "url": "http://localhost:8096", "group": "Media",   "icon": "📺" },
-      { "name": "Sonarr",         "desc": "TV show manager",   "url": "http://localhost:8989", "group": "Media",   "icon": "📡" },
-      { "name": "Radarr",         "desc": "Movie manager",     "url": "http://localhost:7878", "group": "Media",   "icon": "🎬" },
-      { "name": "Prowlarr",       "desc": "Indexer manager",   "url": "http://localhost:9696", "group": "Media",   "icon": "🔍" },
-      { "name": "Pi-hole",        "desc": "DNS ad blocker",    "url": "http://localhost:80",   "group": "Network", "icon": "🛡️" },
-      { "name": "Nginx Proxy",    "desc": "Reverse proxy",     "url": "http://localhost:81",   "group": "Network", "icon": "🔀" },
-      { "name": "Portainer",      "desc": "Docker manager",    "url": "http://localhost:9000", "group": "Dev",     "icon": "🐳" },
-      { "name": "Gitea",          "desc": "Self-hosted Git",   "url": "http://localhost:3000", "group": "Dev",     "icon": "🐙" },
-      { "name": "Uptime Kuma",    "desc": "Status monitoring", "url": "http://localhost:3001", "group": "Dev",     "icon": "📊" },
-      { "name": "Home Assistant", "desc": "Smart home hub",    "url": "http://localhost:8123", "group": "Home",    "icon": "🏠" }
-    ]
+    []

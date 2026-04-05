@@ -54,11 +54,14 @@ sudo kubectl apply -f "$SCRIPT_DIR/03-frontend.yaml"
 success "Manifests applied"
 
 # ── Step 4 — Wait for rollout ─────────────────────────────────────────────────
+# On re-deploys we force a restart so pods pick up the newly imported images
+# (imagePullPolicy: Never means k3s won't re-pull on its own).
+# On a fresh install the restart is a no-op but still safe.
 info "Step 4/4 — Waiting for pods to be ready..."
-sudo kubectl rollout restart deployment/homelab-backend  -n homelab
-sudo kubectl rollout restart deployment/homelab-frontend -n homelab
-sudo kubectl rollout status  deployment/homelab-backend  -n homelab --timeout=90s
-sudo kubectl rollout status  deployment/homelab-frontend -n homelab --timeout=90s
+sudo kubectl rollout restart deployment/homelab-backend  -n homelab 2>/dev/null || true
+sudo kubectl rollout restart deployment/homelab-frontend -n homelab 2>/dev/null || true
+sudo kubectl rollout status  deployment/homelab-backend  -n homelab --timeout=120s
+sudo kubectl rollout status  deployment/homelab-frontend -n homelab --timeout=120s
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
