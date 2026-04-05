@@ -21,12 +21,17 @@ command -v kubectl >/dev/null 2>&1 || die "kubectl not found. k3s installs it at
 command -v k3s     >/dev/null 2>&1 || die "k3s not found. Install: curl -sfL https://get.k3s.io | sh -"
 
 # ── Step 1 — Build Docker images ─────────────────────────────────────────────
+# Backend Dockerfile is at the repo root alongside main.py / requirements.txt
 info "Step 1/4 — Building backend image..."
-docker build -t homelab-backend:latest "$SCRIPT_DIR/backend"
+docker build -t homelab-backend:latest "$SCRIPT_DIR"
 success "homelab-backend:latest built"
 
+# Frontend Dockerfile lives in mnt/user-data/outputs/homelab-k3s/frontend/
+# but nginx.conf is at the repo root, so we pass the root as build context.
 info "Step 1/4 — Building frontend image..."
-docker build -t homelab-frontend:latest "$SCRIPT_DIR/frontend"
+docker build -t homelab-frontend:latest \
+  -f "$SCRIPT_DIR/mnt/user-data/outputs/homelab-k3s/frontend/Dockerfile" \
+  "$SCRIPT_DIR"
 success "homelab-frontend:latest built"
 
 # ── Step 2 — Import images into k3s containerd ───────────────────────────────
@@ -38,8 +43,14 @@ docker save homelab-frontend:latest | sudo k3s ctr images import -
 success "Images imported into k3s"
 
 # ── Step 3 — Apply Kubernetes manifests ──────────────────────────────────────
+# Manifests live at the repo root (no k8s/ subdirectory).
+# Apply in order — namespace first, then configmap, then workloads.
+# 04-ingress.yaml is NOT applied here; it's optional (see README).
 info "Step 3/4 — Applying manifests..."
-sudo kubectl apply -f "$SCRIPT_DIR/k8s/"
+sudo kubectl apply -f "$SCRIPT_DIR/00-namespace.yaml"
+sudo kubectl apply -f "$SCRIPT_DIR/01-configmap.yaml"
+sudo kubectl apply -f "$SCRIPT_DIR/02-backend.yaml"
+sudo kubectl apply -f "$SCRIPT_DIR/03-frontend.yaml"
 success "Manifests applied"
 
 # ── Step 4 — Wait for rollout ─────────────────────────────────────────────────
