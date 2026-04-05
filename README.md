@@ -36,36 +36,16 @@ git clone https://github.com/Matejejko/homelab_dashboard.git
 cd homelab_dashboard
 ```
 
-### 2 — Configure your environment
+### 2 — (Optional) Pre-configure disk filter
 
-Edit `02-backend.yaml` and set the environment variables under the `env:` section:
+Edit `02-backend.yaml` if you need to filter which disks are shown (see "Disk Monitoring" below):
 
 ```yaml
-env:
-  # ... (HOST_PROC, HOST_SYS, HOST_ROOT, SERVICES_FILE are pre-set)
-
-  # ── Your server's LAN IP (used in service URLs) ──
-  - name: DASHBOARD_LAN_IP
-    value: "192.168.0.101"
-
-  # ── ZeroTier IP (leave empty to show button as disabled) ──
-  - name: DASHBOARD_ZT_IP
-    value: ""
-
-  # ── Tailscale IP (leave empty to show button as disabled) ──
-  - name: DASHBOARD_TS_IP
-    value: ""
-
-  # ── Disk filter (see "Disk Monitoring" section below) ──
   - name: DASHBOARD_DISKS
-    value: ""
-
-  # ── Server location for the world map ──
-  - name: DASHBOARD_SERVER_LAT
-    value: "48.946"
-  - name: DASHBOARD_SERVER_LNG
-    value: "20.566"
+    value: ""   # empty = show all, or e.g. "/, /home"
 ```
+
+All other settings (IPs, location, timeout) are configured interactively by the deploy script.
 
 ### 3 — Run the deploy script
 
@@ -73,6 +53,16 @@ env:
 chmod +x deploy.sh
 ./deploy.sh
 ```
+
+The script auto-detects your setup and prompts for confirmation:
+
+1. **Server location** — detects your city from public IP via ip-api.com. Accept, enter manually, or keep current.
+2. **LAN IP** — detects from `hostname -I`. Accept, change, or keep current.
+3. **Tailscale IP** — detects via `tailscale ip` or the `tailscale0` interface. Accept, enter manually, or disable.
+4. **ZeroTier IP** — detects via `zerotier-cli` or `zt*` interfaces. Accept, enter manually, or disable.
+5. **Device detection timeout** — how long (in minutes) a disconnected device stays visible. E.g. `5` for 5 min, `90` for 1.5 hours.
+
+All values are written to `02-backend.yaml` and applied automatically. Then it builds, imports, and deploys.
 
 ### 4 — Open the dashboard
 
@@ -237,19 +227,13 @@ Devices are shown with colored pins and listed with connection details:
 
 The backend Docker image includes the `conntrack` CLI tool. For it to work properly:
 
+The `deploy.sh` script handles this automatically — it prompts for the device timeout in minutes, loads the conntrack module, sets the sysctl, and persists both across reboots.
+
+To change the timeout later without redeploying, run manually:
+
 ```bash
-# Load the conntrack kernel module
-sudo modprobe nf_conntrack
-
-# Make it persist across reboots
-echo nf_conntrack | sudo tee /etc/modules-load.d/nf_conntrack.conf
-
-# (Optional) Reduce timeout so devices disappear faster after disconnecting
-# Default is 432000 (5 days) — set to 300 (5 minutes):
+# Set to 5 minutes (300 seconds):
 sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300
-
-# Make timeout persistent
-echo "net.netfilter.nf_conntrack_tcp_timeout_established=300" | sudo tee -a /etc/sysctl.d/99-conntrack.conf
 ```
 
 ### Manual devices

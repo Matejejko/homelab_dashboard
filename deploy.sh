@@ -96,6 +96,100 @@ esac
 sed -i "/DASHBOARD_SERVER_LAT/{n;s/value: .*/value: \"${NEW_LAT}\"/}" "$BACKEND_YAML"
 sed -i "/DASHBOARD_SERVER_LNG/{n;s/value: .*/value: \"${NEW_LNG}\"/}" "$BACKEND_YAML"
 
+# --- Helper: prompt for an IP (auto-detected, manual, or none) ---
+# Usage: vpn_prompt "Label" "color_code" "detected_ip" "yaml_env_name"
+#   Sets VPN_RESULT to the chosen IP (or empty)
+vpn_prompt() {
+    local LABEL="$1" COLOR="$2" DETECTED_IP="$3" ENV_NAME="$4"
+    local CUR_IP
+    CUR_IP=$(grep -A1 "$ENV_NAME" "$BACKEND_YAML" | grep 'value:' | head -1 | sed 's/.*value: *"\([^"]*\)".*/\1/' || echo "")
+
+    if [ -n "$DETECTED_IP" ]; then
+        echo -e "  Auto-detected: ${COLOR}${DETECTED_IP}${NC}"
+        [ -n "$CUR_IP" ] && echo -e "  Current in config: ${CUR_IP}"
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Use detected: ${DETECTED_IP}"
+        echo -e "  ${BOLD}2)${NC} Enter manually"
+        echo -e "  ${BOLD}3)${NC} No ${LABEL} (disable)"
+        [ -n "$CUR_IP" ] && echo -e "  ${BOLD}4)${NC} Keep current: ${CUR_IP}"
+        echo ""
+        local DEFAULT="1"
+        read -rp "  Choose [1/2/3$( [ -n "$CUR_IP" ] && echo '/4' )] (default: ${DEFAULT}): " CHOICE
+        CHOICE=${CHOICE:-$DEFAULT}
+    else
+        echo -e "  ${YELLOW}Not detected${NC} (no interface found)"
+        [ -n "$CUR_IP" ] && echo -e "  Current in config: ${CUR_IP}"
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Enter manually"
+        echo -e "  ${BOLD}2)${NC} No ${LABEL} (disable)"
+        [ -n "$CUR_IP" ] && echo -e "  ${BOLD}3)${NC} Keep current: ${CUR_IP}"
+        echo ""
+        local DEFAULT="2"
+        [ -n "$CUR_IP" ] && DEFAULT="3"
+        read -rp "  Choose [1/2$( [ -n "$CUR_IP" ] && echo '/3' )] (default: ${DEFAULT}): " CHOICE
+        CHOICE=${CHOICE:-$DEFAULT}
+        # Remap to match detected flow
+        case "$CHOICE" in
+            1) CHOICE=2 ;;  # manual
+            2) CHOICE=3 ;;  # disable
+            3) CHOICE=4 ;;  # keep
+        esac
+    fi
+
+    case "$CHOICE" in
+        1) VPN_RESULT="$DETECTED_IP"; success "${LABEL}: ${DETECTED_IP}" ;;
+        2)
+            read -rp "  Enter ${LABEL} IP: " MANUAL_IP
+            if [ -n "$MANUAL_IP" ]; then
+                VPN_RESULT="$MANUAL_IP"; success "${LABEL}: ${MANUAL_IP}"
+            else
+                VPN_RESULT=""; warn "${LABEL}: disabled (empty input)"
+            fi
+            ;;
+        4) VPN_RESULT="$CUR_IP"; success "${LABEL}: keeping ${CUR_IP}" ;;
+        *) VPN_RESULT=""; success "${LABEL}: disabled" ;;
+    esac
+}
+
+# --- LAN IP ---
+echo ""
+echo -e "${BOLD}── LAN IP ──${NC}"
+DETECTED_LAN=$(hostname -I | awk '{print $1}')
+vpn_prompt "LAN" "$CYAN" "$DETECTED_LAN" "DASHBOARD_LAN_IP"
+NEW_LAN="$VPN_RESULT"
+sed -i "/DASHBOARD_LAN_IP/{n;s/value: .*/value: \"${NEW_LAN}\"/}" "$BACKEND_YAML"
+
+# --- Tailscale ---
+echo ""
+echo -e "${BOLD}── Tailscale ──${NC}"
+DETECTED_TS=""
+if command -v tailscale >/dev/null 2>&1; then
+    DETECTED_TS=$(tailscale ip -4 2>/dev/null || true)
+fi
+# Fallback: check for tailscale0 interface
+if [ -z "$DETECTED_TS" ]; then
+    DETECTED_TS=$(ip -4 addr show tailscale0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || true)
+fi
+vpn_prompt "Tailscale" "\033[0;35m" "$DETECTED_TS" "DASHBOARD_TS_IP"
+NEW_TS="$VPN_RESULT"
+sed -i "/DASHBOARD_TS_IP/{n;s/value: .*/value: \"${NEW_TS}\"/}" "$BACKEND_YAML"
+
+# --- ZeroTier ---
+echo ""
+echo -e "${BOLD}── ZeroTier ──${NC}"
+DETECTED_ZT=""
+if command -v zerotier-cli >/dev/null 2>&1; then
+    # Get the first assigned IPv4 from any joined network
+    DETECTED_ZT=$(zerotier-cli listnetworks -j 2>/dev/null | grep -oP '"assignedAddresses":\["\K[0-9.]+' | head -1 || true)
+fi
+# Fallback: check for zt* interface
+if [ -z "$DETECTED_ZT" ]; then
+    DETECTED_ZT=$(ip -4 addr show 2>/dev/null | grep -A2 ' zt' | grep -oP 'inet \K[0-9.]+' | head -1 || true)
+fi
+vpn_prompt "ZeroTier" "$YELLOW" "$DETECTED_ZT" "DASHBOARD_ZT_IP"
+NEW_ZT="$VPN_RESULT"
+sed -i "/DASHBOARD_ZT_IP/{n;s/value: .*/value: \"${NEW_ZT}\"/}" "$BACKEND_YAML"
+
 # --- Conntrack device timeout ---
 echo ""
 echo -e "${BOLD}── Device Detection Timeout ──${NC}"
