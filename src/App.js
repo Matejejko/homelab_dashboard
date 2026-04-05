@@ -240,11 +240,11 @@ function DeviceList({ devices }) {
     <div style={{ overflowY: 'auto', maxHeight: '400px' }}>
       {devices.map((d, i) => (
         <div key={i} style={{ padding: '8px 10px', borderBottom: '1px solid #1a1c28', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: d.type === 'lan' ? '#60a5fa' : '#f59e0b' }} />
+          <span style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: TYPE_COLORS[d.type] || '#94a3b8' }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: '0.82rem', color: '#f1f5f9', fontFamily: 'monospace' }}>{d.ip}</div>
             <div style={{ fontSize: '0.68rem', color: '#64748b' }}>
-              {d.city && d.country ? `${d.city}, ${d.country}` : d.type === 'lan' ? 'LAN' : 'Unknown'}
+              {d.city && d.country ? `${d.city}, ${d.country}` : d.type === 'lan' ? 'LAN' : d.type === 'tailscale' ? 'Tailscale' : d.type === 'zerotier' ? 'ZeroTier' : 'Unknown'}
               {d.services && d.services.length > 0 && ` · ${d.services.join(', ')}`}
             </div>
           </div>
@@ -700,7 +700,17 @@ export default function App() {
         const sLoc = layout.serverLocation;
         // Merge auto-detected devices (from API) with manual devices (from settings)
         const mapDevices = [
-          ...autoDevices.filter(d => d.lat && d.lng).map(d => ({ name: `${d.ip}${d.city ? ' — ' + d.city : ''}`, lat: d.lat, lng: d.lng, type: d.type === 'lan' ? 'lan' : 'wan' })),
+          ...autoDevices.map(d => {
+            // WAN devices use their geolocated position; LAN/Tailscale/ZeroTier cluster near server
+            const hasGeo = d.lat && d.lng;
+            const nearServer = (sLoc.lat || sLoc.lng) && !hasGeo;
+            return {
+              name: `${d.ip}${d.city ? ' — ' + d.city : d.type !== 'wan' ? ' — ' + d.type.toUpperCase() : ''}`,
+              lat: hasGeo ? d.lat : nearServer ? sLoc.lat + (Math.random() - 0.5) * 0.4 : null,
+              lng: hasGeo ? d.lng : nearServer ? sLoc.lng + (Math.random() - 0.5) * 0.4 : null,
+              type: d.type,
+            };
+          }).filter(d => d.lat != null && d.lng != null),
           ...(layout.devices || []),
         ];
         const allDevices = autoDevices;
@@ -718,9 +728,10 @@ export default function App() {
                 <DeviceList devices={allDevices} />
                 {/* Legend */}
                 <div style={{ display: 'flex', gap: '12px', marginTop: '10px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#60a5fa', marginRight: '3px' }} />LAN</span>
-                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#f59e0b', marginRight: '3px' }} />WAN</span>
                   <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#22c55e', marginRight: '3px' }} />Server</span>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#60a5fa', marginRight: '3px' }} />LAN</span>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#a78bfa', marginRight: '3px' }} />Tailscale</span>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#f59e0b', marginRight: '3px' }} />ZeroTier / WAN</span>
                 </div>
               </div>
               {/* Right — Map */}

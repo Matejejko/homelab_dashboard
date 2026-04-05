@@ -467,41 +467,107 @@ async def get_services():
     return list(await asyncio.gather(*[check(s) for s in services]))
 
 
-# ─── Device detection via /proc/net/tcp ──────────────────────────────────────
+# ─── Device detection via conntrack ──────────────────────────────────────────
 
 _geo_cache: dict[str, dict] = {}   # ip → {lat, lng, city, country, ts}
 _GEO_TTL = 300  # 5 minutes
 
+# k3s internal CIDRs — pods and services, not real clients
+_K3S_CIDRS = (
+    ipaddress.ip_network("10.42.0.0/16"),  # pod CIDR
+    ipaddress.ip_network("10.43.0.0/16"),  # service CIDR
+)
 
-def _parse_proc_net_tcp() -> dict[str, set[int]]:
-    """Parse /proc/net/tcp for ESTABLISHED connections. Returns {remote_ip: {local_ports}}."""
-    tcp_path = Path(HOST_PROC) / "net" / "tcp"
+
+def _get_local_ips() -> set[str]:
+    """Collect all IPs assigned to local network interfaces."""
+    ips = set()
+    for _, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == socket.AF_INET:
+                ips.add(addr.address)
+    return ips
+
+
+def _parse_conntrack() -> dict[str, set[int]]:
+    """Parse /proc/net/nf_conntrack for ESTABLISHED inbound TCP connections.
+    Returns {client_ip: {dest_ports}} — only real external/Tailscale/ZT clients."""
+    ct_path = Path(HOST_PROC) / "net" / "nf_conntrack"
     result: dict[str, set[int]] = {}
+
     try:
-        lines = tcp_path.read_text().splitlines()[1:]  # skip header
+        lines = ct_path.read_text().splitlines()
     except OSError:
         return result
 
+    local_ips = _get_local_ips()
+
+    for line in lines:
+        if "ESTABLISHED" not in line or "tcp" not in line:
+            continue
+
+        # Extract key=value pairs — first occurrence = original direction
+        kv: dict[str, str] = {}
+        for token in line.split():
+            if "=" in token:
+                k, v = token.split("=", 1)
+                if k not in kv:
+                    kv[k] = v
+
+        src = kv.get("src", "")
+        dport = kv.get("dport", "")
+        if not src or not dport:
+            continue
+
+        try:
+            ip_obj = ipaddress.ip_address(src)
+        except ValueError:
+            continue
+
+        # Skip loopback, link-local
+        if ip_obj.is_loopback or ip_obj.is_link_local:
+            continue
+
+        # Skip k3s internal pod/service CIDRs
+        if any(ip_obj in cidr for cidr in _K3S_CIDRS):
+            continue
+
+        # Skip connections originating FROM this server (outbound)
+        if src in local_ips:
+            continue
+
+        port = int(dport)
+        if src not in result:
+            result[src] = set()
+        result[src].add(port)
+
+    return result
+
+
+def _parse_proc_net_tcp() -> dict[str, set[int]]:
+    """Fallback: parse /proc/net/tcp for ESTABLISHED connections."""
+    tcp_path = Path(HOST_PROC) / "net" / "tcp"
+    result: dict[str, set[int]] = {}
+    try:
+        lines = tcp_path.read_text().splitlines()[1:]
+    except OSError:
+        return result
+
+    local_ips = _get_local_ips()
+
     for line in lines:
         parts = line.split()
-        if len(parts) < 4:
-            continue
-        state = parts[3]
-        if state != "01":  # 01 = ESTABLISHED
+        if len(parts) < 4 or parts[3] != "01":
             continue
 
         local_hex, remote_hex = parts[1], parts[2]
-
-        # Parse local port
         local_port = int(local_hex.split(":")[1], 16)
 
-        # Parse remote IP:port (little-endian hex)
-        r_ip_hex, r_port_hex = remote_hex.split(":")
+        r_ip_hex, _ = remote_hex.split(":")
         r_ip_int = struct.unpack("<I", bytes.fromhex(r_ip_hex))[0]
         r_ip = str(ipaddress.IPv4Address(r_ip_int))
 
-        # Skip loopback and 0.0.0.0
-        if r_ip.startswith("127.") or r_ip == "0.0.0.0":
+        if r_ip.startswith("127.") or r_ip == "0.0.0.0" or r_ip in local_ips:
             continue
 
         if r_ip not in result:
@@ -509,6 +575,14 @@ def _parse_proc_net_tcp() -> dict[str, set[int]]:
         result[r_ip].add(local_port)
 
     return result
+
+
+def _detect_connections() -> dict[str, set[int]]:
+    """Try conntrack first (sees k3s NATted connections), fall back to /proc/net/tcp."""
+    conns = _parse_conntrack()
+    if conns:
+        return conns
+    return _parse_proc_net_tcp()
 
 
 async def _geolocate_ips(ips: list[str]) -> dict[str, dict]:
@@ -548,14 +622,36 @@ async def _geolocate_ips(ips: list[str]) -> dict[str, dict]:
     return results
 
 
+# Tailscale CGNAT range: 100.64.0.0/10
+_TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+# ZeroTier typical range: 10.147.0.0/16 (varies, but common default)
+_ZT_NETS = (ipaddress.ip_network("10.147.0.0/16"),)
+
+
+def _classify_ip(ip_str: str) -> str:
+    """Classify a client IP as lan, tailscale, zerotier, or wan."""
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return "wan"
+    if ip_obj in _TAILSCALE_NET:
+        return "tailscale"
+    for net in _ZT_NETS:
+        if ip_obj in net:
+            return "zerotier"
+    if ip_obj.is_private:
+        return "lan"
+    return "wan"
+
+
 @app.get("/api/devices")
 async def get_devices():
-    """Scan TCP connections and return connected devices with geolocation."""
-    connections = _parse_proc_net_tcp()
+    """Scan TCP connections (via conntrack or /proc/net/tcp) and return connected devices."""
+    connections = _detect_connections()
     if not connections:
         return {"devices": [], "total": 0}
 
-    # Map local ports to service names
+    # Map dest ports to service names
     try:
         svcs = load_services()
         port_to_svc = {}
@@ -568,30 +664,26 @@ async def get_devices():
     devices = []
     public_ips = []
 
-    for ip, local_ports in connections.items():
-        try:
-            is_private = ipaddress.ip_address(ip).is_private
-        except ValueError:
-            continue
-
-        svc_names = sorted({port_to_svc[p] for p in local_ports if p in port_to_svc})
+    for ip, ports in connections.items():
+        dev_type = _classify_ip(ip)
+        svc_names = sorted({port_to_svc[p] for p in ports if p in port_to_svc})
 
         device = {
             "ip": ip,
-            "ports": sorted(local_ports),
-            "connections": len(local_ports),
+            "ports": sorted(ports),
+            "connections": len(ports),
             "services": svc_names,
-            "type": "lan" if is_private else "wan",
+            "type": dev_type,
             "lat": None,
             "lng": None,
             "city": "",
             "country": "",
         }
         devices.append(device)
-        if not is_private:
+        if dev_type == "wan":
             public_ips.append(ip)
 
-    # Geolocate public IPs
+    # Geolocate public (WAN) IPs
     if public_ips:
         geo = await _geolocate_ips(public_ips)
         for d in devices:
@@ -602,8 +694,9 @@ async def get_devices():
                 d["city"] = g["city"]
                 d["country"] = g["country"]
 
-    # Sort: public (with location) first, then by connections desc
-    devices.sort(key=lambda d: (d["type"] == "lan", -d["connections"]))
+    # Sort: wan first (with geolocation), then tailscale/zerotier, then lan
+    type_order = {"wan": 0, "tailscale": 1, "zerotier": 2, "lan": 3}
+    devices.sort(key=lambda d: (type_order.get(d["type"], 9), -d["connections"]))
 
     return {"devices": devices, "total": len(devices)}
 
