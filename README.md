@@ -36,22 +36,7 @@ scp -r homelab-k3s/ user@192.168.1.100:~/homelab-k3s
 # or git clone, rsync, etc.
 ```
 
-### Step 2 — Edit your services list
-
-Open `k8s/01-configmap.yaml` and update the services to match what's actually running on your server:
-
-```bash
-nano ~/homelab-k3s/k8s/01-configmap.yaml
-```
-
-Each entry:
-```json
-{ "name": "Jellyfin", "desc": "Media server", "url": "http://localhost:8096", "group": "Media", "icon": "📺" }
-```
-
-> **Tip:** Use `localhost` URLs — the backend pod runs with `hostNetwork: true` so it sees your host's ports directly.
-
-### Step 3 — Run the deploy script
+### Step 2 — Run the deploy script
 
 ```bash
 cd ~/homelab-k3s
@@ -65,7 +50,7 @@ This will:
 3. Apply all manifests in `k8s/`
 4. Wait for both pods to become ready
 
-### Step 4 — Open the dashboard
+### Step 3 — Open the dashboard
 
 ```
 http://YOUR-SERVER-IP:30300
@@ -73,13 +58,29 @@ http://YOUR-SERVER-IP:30300
 
 ---
 
-## Updating Services (no rebuild needed)
+## Service Auto-Discovery
 
-Edit the ConfigMap directly — changes take effect on the next `/api/services` poll:
+The dashboard automatically discovers services from **all Ingresses** in the cluster. No configuration needed — if an Ingress exists, it shows up.
 
-```bash
-sudo kubectl edit configmap homelab-services -n homelab
+The URL is detected from the Ingress spec (host + path). To customize display, add optional annotations to the Ingress:
+
+```yaml
+annotations:
+  homelab-dashboard/name:  "Jellyfin"       # defaults to resource name
+  homelab-dashboard/desc:  "Media server"   # defaults to empty
+  homelab-dashboard/group: "Media"          # defaults to namespace
+  homelab-dashboard/icon:  "📺"             # defaults to 🔧
+  homelab-dashboard/url:   "http://..."     # overrides auto-detected URL
 ```
+
+To **hide** a specific Ingress from the dashboard:
+
+```yaml
+annotations:
+  homelab-dashboard/enabled: "false"
+```
+
+> **Fallback:** When running outside k3s (local dev), the backend falls back to `services.json` / the ConfigMap.
 
 ---
 
@@ -120,7 +121,7 @@ To use a hostname like `homelab.local`, edit the `host:` field in `04-ingress.ya
 | Backend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
 | Frontend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
 | Describe a failing pod | `sudo kubectl describe pod -n homelab <pod-name>` |
-| Edit services live | `sudo kubectl edit configmap homelab-services -n homelab` |
+| View discovered services | `sudo kubectl get ingresses -A` |
 | Delete everything | `sudo kubectl delete namespace homelab` |
 
 ---
