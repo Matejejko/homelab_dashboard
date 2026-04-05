@@ -2,7 +2,7 @@
 Homelab Dashboard — Backend API (k3s edition)
 Reads host system stats via mounted /proc and /sys volumes.
 Services are auto-discovered from:
-  1. Kubernetes Services (NodePort, LoadBalancer, ClusterIP)
+  1. Kubernetes Services (NodePort, LoadBalancer, Ingress-backed)
   2. Docker containers with published ports
   3. ConfigMap / services.json (manual additions)
 """
@@ -10,6 +10,7 @@ Services are auto-discovered from:
 import json
 import logging
 import os
+import socket
 import time
 import asyncio
 from pathlib import Path
@@ -27,7 +28,7 @@ app = FastAPI(title="Homelab Dashboard API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -42,59 +43,112 @@ SERVICES_FILE = Path(os.environ.get("SERVICES_FILE", "/config/services.json"))
 if not SERVICES_FILE.exists():
     SERVICES_FILE = Path(__file__).parent / "services.json"
 
-_ANN = "homelab-dashboard"  # annotation / label prefix
+_ANN = "homelab-dashboard"
 
-# Well-known ports → (display name, icon, group, description)
-KNOWN_PORTS: dict[int, tuple[str, str, str, str]] = {
-    80:    ("Web Server",     "🌐", "Network",    "HTTP server"),
-    81:    ("Nginx PM",       "🔀", "Network",    "Reverse proxy"),
-    443:   ("HTTPS",          "🔒", "Network",    "HTTPS server"),
-    1880:  ("Node-RED",       "🔴", "Home",       "Automation flows"),
-    3000:  ("Grafana",        "📊", "Monitoring", "Metrics dashboard"),
-    3001:  ("Uptime Kuma",    "📊", "Monitoring", "Status monitoring"),
-    4533:  ("Navidrome",      "🎵", "Media",      "Music server"),
-    5055:  ("Overseerr",      "🎟️", "Media",      "Request manager"),
-    6767:  ("Bazarr",         "💬", "Media",      "Subtitle manager"),
-    6789:  ("NZBGet",         "⬇️", "Download",   "NZB downloader"),
-    7878:  ("Radarr",         "🎬", "Media",      "Movie manager"),
-    8080:  ("qBittorrent",    "⬇️", "Download",   "Torrent client"),
-    8083:  ("Calibre Web",    "📚", "Media",      "E-book library"),
-    8096:  ("Jellyfin",       "📺", "Media",      "Media server"),
-    8123:  ("Home Assistant", "🏠", "Home",       "Smart home hub"),
-    8181:  ("Tautulli",       "📊", "Media",      "Plex analytics"),
-    8191:  ("FlareSolverr",   "🔓", "Media",      "Captcha solver"),
-    8686:  ("Lidarr",         "🎵", "Media",      "Music manager"),
-    8787:  ("Readarr",        "📚", "Media",      "Book manager"),
-    8989:  ("Sonarr",         "📡", "Media",      "TV show manager"),
-    9000:  ("Portainer",      "🐳", "Dev",        "Docker manager"),
-    9091:  ("Transmission",   "⬇️", "Download",   "Torrent client"),
-    9117:  ("Jackett",        "🔍", "Media",      "Indexer proxy"),
-    9696:  ("Prowlarr",       "🔍", "Media",      "Indexer manager"),
-    32400: ("Plex",           "🎞️", "Media",      "Media server"),
+# ─── Network config ──────────────────────────────────────────────────────────
+# These IPs are returned to the frontend so it can build per-network URLs.
+# Set via env vars in 02-backend.yaml or auto-detected.
+LAN_IP = os.environ.get("DASHBOARD_LAN_IP", "")
+if not LAN_IP:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        LAN_IP = s.getsockname()[0]
+        s.close()
+    except Exception:
+        LAN_IP = "localhost"
+
+ZT_IP = os.environ.get("DASHBOARD_ZT_IP", "")
+TS_IP = os.environ.get("DASHBOARD_TS_IP", "")
+
+# ─── Image-based service identification ──────────────────────────────────────
+# Maps a keyword found in Docker image names or k8s service names to display info.
+# Only used for pretty names and icons — does NOT add phantom services.
+KNOWN_IMAGES: dict[str, dict[str, str]] = {
+    "jellyfin":       {"name": "Jellyfin",       "icon": "📺"},
+    "plex":           {"name": "Plex",           "icon": "🎞️"},
+    "sonarr":         {"name": "Sonarr",         "icon": "📡"},
+    "radarr":         {"name": "Radarr",         "icon": "🎬"},
+    "prowlarr":       {"name": "Prowlarr",       "icon": "🔍"},
+    "lidarr":         {"name": "Lidarr",         "icon": "🎵"},
+    "readarr":        {"name": "Readarr",        "icon": "📚"},
+    "bazarr":         {"name": "Bazarr",         "icon": "💬"},
+    "overseerr":      {"name": "Overseerr",      "icon": "🎟️"},
+    "tautulli":       {"name": "Tautulli",       "icon": "📊"},
+    "transmission":   {"name": "Transmission",   "icon": "⬇️"},
+    "qbittorrent":    {"name": "qBittorrent",    "icon": "⬇️"},
+    "deluge":         {"name": "Deluge",         "icon": "⬇️"},
+    "sabnzbd":        {"name": "SABnzbd",        "icon": "⬇️"},
+    "nzbget":         {"name": "NZBGet",         "icon": "⬇️"},
+    "jackett":        {"name": "Jackett",        "icon": "🔍"},
+    "flaresolverr":   {"name": "FlareSolverr",   "icon": "🔓"},
+    "pihole":         {"name": "Pi-hole",        "icon": "🛡️"},
+    "adguard":        {"name": "AdGuard Home",   "icon": "🛡️"},
+    "nginx":          {"name": "Nginx",          "icon": "🔀"},
+    "traefik":        {"name": "Traefik",        "icon": "🔀"},
+    "portainer":      {"name": "Portainer",      "icon": "🐳"},
+    "grafana":        {"name": "Grafana",        "icon": "📈"},
+    "prometheus":     {"name": "Prometheus",     "icon": "🔥"},
+    "uptime-kuma":    {"name": "Uptime Kuma",    "icon": "📊"},
+    "uptimekuma":     {"name": "Uptime Kuma",    "icon": "📊"},
+    "gitea":          {"name": "Gitea",          "icon": "🐙"},
+    "homeassistant":  {"name": "Home Assistant", "icon": "🏠"},
+    "home-assistant": {"name": "Home Assistant", "icon": "🏠"},
+    "node-red":       {"name": "Node-RED",       "icon": "🔴"},
+    "nodered":        {"name": "Node-RED",       "icon": "🔴"},
+    "nextcloud":      {"name": "Nextcloud",      "icon": "☁️"},
+    "vaultwarden":    {"name": "Vaultwarden",    "icon": "🔐"},
+    "navidrome":      {"name": "Navidrome",      "icon": "🎵"},
+    "immich":         {"name": "Immich",         "icon": "📷"},
+    "frigate":        {"name": "Frigate",        "icon": "📷"},
+    "photoprism":     {"name": "PhotoPrism",     "icon": "📷"},
+    "calibre":        {"name": "Calibre",        "icon": "📚"},
+    "paperless":      {"name": "Paperless",      "icon": "📄"},
+    "syncthing":      {"name": "Syncthing",      "icon": "🔄"},
+    "filebrowser":    {"name": "File Browser",   "icon": "📁"},
+    "wireguard":      {"name": "WireGuard",      "icon": "🔒"},
+    "minecraft":      {"name": "Minecraft",      "icon": "🎮"},
+    "valheim":        {"name": "Valheim",        "icon": "🎮"},
+    "terraria":       {"name": "Terraria",       "icon": "🎮"},
+    "foundry":        {"name": "Foundry VTT",    "icon": "🎲"},
 }
 
-# Namespaces and service names to skip in k8s auto-discovery
-_SKIP_NS = {"kube-system", "kube-public", "kube-node-lease"}
+_SKIP_NS  = {"kube-system", "kube-public", "kube-node-lease"}
 _SKIP_SVC = {"kubernetes", "kube-dns", "homelab-backend", "homelab-frontend"}
+
+
+def _match_image(image: str) -> dict[str, str]:
+    """Match a Docker image string against known services."""
+    img = image.lower()
+    for key, meta in KNOWN_IMAGES.items():
+        if key in img:
+            return meta
+    return {}
+
+
+def _match_name(name: str) -> dict[str, str]:
+    """Match a k8s service name against known services."""
+    n = name.lower().replace("-", "").replace("_", "")
+    for key, meta in KNOWN_IMAGES.items():
+        if key.replace("-", "") in n:
+            return meta
+    return {}
 
 
 # ─── Service auto-discovery ──────────────────────────────────────────────────
 
 def _services_from_k8s() -> list[dict] | None:
-    """
-    Auto-discover services from Kubernetes Services and Ingresses.
-    Scans all namespaces, returns reachable services with their ports.
-    """
+    """Auto-discover from Kubernetes Services + Ingresses."""
     try:
         from kubernetes import client as k8s_client, config as k8s_config
         k8s_config.load_incluster_config()
-        v1 = k8s_client.CoreV1Api()
+        v1  = k8s_client.CoreV1Api()
         net = k8s_client.NetworkingV1Api()
     except Exception as exc:
         logger.debug("k8s discovery unavailable: %s", exc)
         return None
 
-    # Build Ingress URL map: namespace/svc-name → URL
+    # Build Ingress URL map: "namespace/svc-name" → URL
     ingress_urls: dict[str, str] = {}
     try:
         for ing in net.list_ingress_for_all_namespaces(timeout_seconds=5).items:
@@ -103,9 +157,10 @@ def _services_from_k8s() -> list[dict] | None:
                 continue
             scheme = "https" if ing.spec.tls else "http"
             for rule in (ing.spec.rules or []):
-                host = rule.host or "localhost"
+                host = rule.host or LAN_IP
                 for hp in (rule.http.paths if rule.http else []):
-                    svc_name = hp.backend.service.name if hp.backend and hp.backend.service else None
+                    be = hp.backend
+                    svc_name = be.service.name if be and be.service else None
                     if svc_name:
                         path = ""
                         if hp.path and hp.path not in ("/", "/*"):
@@ -114,7 +169,6 @@ def _services_from_k8s() -> list[dict] | None:
     except Exception:
         pass
 
-    # Scan all Services
     try:
         all_svcs = v1.list_service_for_all_namespaces(timeout_seconds=5)
     except Exception as exc:
@@ -132,10 +186,10 @@ def _services_from_k8s() -> list[dict] | None:
         if ann.get(f"{_ANN}/enabled") == "false":
             continue
 
-        # Determine URL
-        url = ann.get(f"{_ANN}/url")
         ports = svc.spec.ports or []
         port_num = ports[0].port if ports else None
+        ext_port = None
+        url = ann.get(f"{_ANN}/url")
 
         if not url:
             key = f"{ns}/{name}"
@@ -144,25 +198,29 @@ def _services_from_k8s() -> list[dict] | None:
             elif svc.spec.type == "NodePort" and ports:
                 np = ports[0].node_port
                 if np:
+                    ext_port = np
                     url = f"http://localhost:{np}"
             elif svc.spec.type == "LoadBalancer":
                 lbi = (svc.status.load_balancer.ingress or []) if svc.status and svc.status.load_balancer else []
                 if lbi:
-                    lb_host = lbi[0].ip or lbi[0].hostname or "localhost"
-                    url = f"http://{lb_host}:{port_num or 80}"
-            elif port_num:
-                url = f"http://{name}.{ns}.svc:{port_num}"
+                    host = lbi[0].ip or lbi[0].hostname or LAN_IP
+                    ext_port = port_num
+                    url = f"http://{host}:{port_num or 80}"
+            else:
+                # ClusterIP without Ingress — internal only, skip
+                continue
 
         if not url:
             continue
 
-        known = KNOWN_PORTS.get(port_num, ("", "🔧", "", ""))
+        meta = _match_name(name)
         results.append({
-            "name":  ann.get(f"{_ANN}/name")  or known[0] or name,
-            "desc":  ann.get(f"{_ANN}/desc")  or known[3] or "",
+            "name":  ann.get(f"{_ANN}/name")  or meta.get("name")  or name,
+            "desc":  ann.get(f"{_ANN}/desc")  or "",
             "url":   url,
-            "group": ann.get(f"{_ANN}/group") or known[2] or ns,
-            "icon":  ann.get(f"{_ANN}/icon")  or known[1] or "🔧",
+            "port":  ext_port,
+            "group": ann.get(f"{_ANN}/group") or ns,
+            "icon":  ann.get(f"{_ANN}/icon")  or meta.get("icon")  or "🔧",
         })
 
     return results
@@ -198,15 +256,17 @@ def _services_from_docker() -> list[dict] | None:
             continue
 
         port = host_ports[0] if host_ports else None
-        known = KNOWN_PORTS.get(port, ("", "🔧", "Docker", ""))
+        image = c.get("Image", "")
+        meta = _match_image(image)
         name_raw = (c.get("Names") or ["/unknown"])[0].lstrip("/")
 
         services.append({
-            "name":  labels.get(f"{_ANN}.name")  or known[0] or name_raw,
-            "desc":  labels.get(f"{_ANN}.desc")  or known[3] or "",
+            "name":  labels.get(f"{_ANN}.name")  or meta.get("name")  or name_raw,
+            "desc":  labels.get(f"{_ANN}.desc")  or "",
             "url":   labels.get(f"{_ANN}.url")   or (f"http://localhost:{port}" if port else ""),
-            "group": labels.get(f"{_ANN}.group") or known[2] or "Docker",
-            "icon":  labels.get(f"{_ANN}.icon")  or known[1] or "🐳",
+            "port":  port,
+            "group": labels.get(f"{_ANN}.group") or "Docker",
+            "icon":  labels.get(f"{_ANN}.icon")  or meta.get("icon")  or "🐳",
         })
 
     return services or None
@@ -234,7 +294,6 @@ def load_services() -> list[dict]:
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _host_temp() -> float | None:
-    """Read CPU temp from the host /sys tree."""
     for hwmon in sorted(Path(HOST_SYS).glob("class/hwmon/hwmon*")):
         name_file = hwmon / "name"
         name = name_file.read_text().strip() if name_file.exists() else ""
@@ -253,11 +312,7 @@ def _host_temp() -> float | None:
 
 
 def _host_disks() -> list[dict]:
-    """
-    Read the real host filesystems from /host/proc/1/mounts (PID 1 = host init).
-    This bypasses the container mount namespace and shows actual host partitions.
-    """
-    # PID 1 mounts give us the host's real mount table
+    """Read real host filesystems from PID 1 mount table."""
     mounts_path = Path(HOST_PROC) / "1" / "mounts"
     if not mounts_path.exists():
         mounts_path = Path(HOST_PROC) / "mounts"
@@ -294,12 +349,7 @@ def _host_disks() -> list[dict]:
             continue
         seen_devs.add(dev)
 
-        # Probe usage through the host-root mount
-        if HOST_ROOT != "/":
-            probe = str(Path(HOST_ROOT) / mount.lstrip("/"))
-        else:
-            probe = mount
-
+        probe = str(Path(HOST_ROOT) / mount.lstrip("/")) if HOST_ROOT != "/" else mount
         try:
             usage = psutil.disk_usage(probe)
             disks.append({
@@ -317,6 +367,13 @@ def _host_disks() -> list[dict]:
     return disks
 
 
+# ─── /api/config ─────────────────────────────────────────────────────────────
+@app.get("/api/config")
+def get_config():
+    """Return network IPs so the frontend can build per-network access URLs."""
+    return {"lan_ip": LAN_IP, "zt_ip": ZT_IP, "ts_ip": TS_IP}
+
+
 # ─── /api/system ─────────────────────────────────────────────────────────────
 @app.get("/api/system")
 def get_system():
@@ -330,7 +387,6 @@ def get_system():
         load_avg = [0.0, 0.0, 0.0]
 
     mem = psutil.virtual_memory()
-
     disks = _host_disks()
 
     uptime_secs = 0
@@ -354,19 +410,15 @@ def get_system():
 
     return {
         "cpu": {
-            "percent":  cpu_pct,
-            "cores":    cpu_cores,
-            "threads":  cpu_threads,
+            "percent": cpu_pct, "cores": cpu_cores, "threads": cpu_threads,
             "freq_mhz": round(cpu_freq.current) if cpu_freq else None,
             "load_avg": load_avg,
         },
         "ram": {
-            "total_gb": round(mem.total      / 1e9, 1),
-            "used_gb":  round(mem.used       / 1e9, 1),
-            "free_gb":  round(mem.available  / 1e9, 1),
-            "percent":  mem.percent,
+            "total_gb": round(mem.total / 1e9, 1), "used_gb": round(mem.used / 1e9, 1),
+            "free_gb": round(mem.available / 1e9, 1), "percent": mem.percent,
         },
-        "disks":  disks,
+        "disks": disks,
         "uptime": {"days": days, "hours": hours, "minutes": minutes, "total_seconds": uptime_secs},
         "temp_c": temp_c,
         "network": {"rx_mb_s": rx, "tx_mb_s": tx},
@@ -379,17 +431,18 @@ async def get_services():
     services = load_services()
 
     async def check(svc: dict) -> dict:
-        url   = svc.get("url", f"http://localhost:{svc.get('port', 80)}")
+        url = svc.get("url", "")
         start = time.monotonic()
         status, ping_ms = "offline", None
-        try:
-            async with httpx.AsyncClient(timeout=2.5) as client:
-                r = await client.get(url, follow_redirects=True)
-                if r.status_code < 600:
-                    status  = "online"
-                    ping_ms = round((time.monotonic() - start) * 1000)
-        except Exception:
-            pass
+        if url:
+            try:
+                async with httpx.AsyncClient(timeout=2.5) as client:
+                    r = await client.get(url, follow_redirects=True)
+                    if r.status_code < 600:
+                        status  = "online"
+                        ping_ms = round((time.monotonic() - start) * 1000)
+            except Exception:
+                pass
         return {**svc, "status": status, "ping_ms": ping_ms}
 
     return list(await asyncio.gather(*[check(s) for s in services]))

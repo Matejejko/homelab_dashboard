@@ -7,7 +7,8 @@ Browser → NodePort :30300 → frontend (nginx)
                                 ├── /          → React static files
                                 └── /api/*     → backend pod :8000
                                                     ├── /api/system    (psutil → host /proc /sys)
-                                                    └── /api/services  (k8s + Docker auto-discovery)
+                                                    ├── /api/services  (k8s + Docker auto-discovery)
+                                                    └── /api/config    (network IPs for LAN/ZT/TS)
 ```
 
 ---
@@ -27,28 +28,38 @@ sudo usermod -aG docker $USER   # then log out and back in
 
 ## Step-by-Step Deploy
 
-### 1 — Clone the repo onto your server
+### 1 — Clone the repo
 
 ```bash
 git clone https://github.com/Matejejko/homelab_dashboard.git
 cd homelab_dashboard
 ```
 
-### 2 — Run the deploy script
+### 2 — Configure your IPs
+
+Edit `02-backend.yaml` and set these environment variables:
+
+```yaml
+- name: DASHBOARD_LAN_IP
+  value: "192.168.0.101"       # ← your server's LAN IP
+- name: DASHBOARD_ZT_IP
+  value: ""                    # ← your ZeroTier IP (or leave empty)
+- name: DASHBOARD_TS_IP
+  value: ""                    # ← your Tailscale IP (or leave empty)
+```
+
+These IPs are used by the frontend to build access URLs for each service. Each service card gets a **LAN** button, and optionally **ZeroTier** and **Tailscale** buttons if those IPs are set.
+
+You can also change them later via the **Settings** button in the dashboard UI (saved to browser localStorage).
+
+### 3 — Run the deploy script
 
 ```bash
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-This will:
-1. Build the backend Docker image (from `Dockerfile` at repo root)
-2. Build the frontend Docker image (multi-stage React + nginx)
-3. Import both images into k3s's containerd
-4. Apply all manifests (namespace, configmap, backend, frontend)
-5. Wait for pods to become ready
-
-### 3 — Open the dashboard
+### 4 — Open the dashboard
 
 ```
 http://YOUR-SERVER-IP:30300
@@ -58,70 +69,81 @@ http://YOUR-SERVER-IP:30300
 
 ## Service Auto-Discovery
 
-Services are discovered automatically from **three sources** (no manual config needed):
+Services are discovered automatically from **three sources** — no manual config needed:
 
 ### 1. Kubernetes Services
-Every Service in the cluster is detected (except `kube-system` internals and the dashboard itself). The URL is determined by:
-- **NodePort** services → `http://localhost:<nodePort>`
-- **LoadBalancer** services → external IP + port
-- **ClusterIP** services → `http://<name>.<namespace>.svc:<port>`
-- **Ingress** attached to a service → Ingress host/path URL
+Every Service in the cluster is detected (except `kube-system` internals and the dashboard itself):
+- **NodePort** → `http://LAN_IP:<nodePort>`
+- **LoadBalancer** → external IP + port
+- **ClusterIP + Ingress** → Ingress URL
+- **ClusterIP without Ingress** → skipped (internal only)
 
 ### 2. Docker Containers
-Any running Docker container with a published host port is detected via `/var/run/docker.sock`. Well-known ports (Jellyfin 8096, Sonarr 8989, Radarr 7878, etc.) get automatic names and icons.
+Any running Docker container with a published host port is detected via `/var/run/docker.sock`. Service names and icons are matched from the Docker image name (e.g., `linuxserver/jellyfin` is identified as Jellyfin).
 
 ### 3. ConfigMap (manual additions)
-For services that can't be auto-detected (e.g. on another host), add them to the ConfigMap:
+For services that can't be auto-detected:
 
 ```bash
 sudo kubectl edit configmap homelab-services -n homelab
 ```
 
-### Customizing display with annotations/labels
+### Customizing display
 
-**k8s Services** — add annotations:
+**k8s Services** — annotations:
 ```yaml
 annotations:
-  homelab-dashboard/name:  "Jellyfin"
-  homelab-dashboard/desc:  "Media server"
+  homelab-dashboard/name: "Jellyfin"
+  homelab-dashboard/icon: "📺"
   homelab-dashboard/group: "Media"
-  homelab-dashboard/icon:  "📺"
-  homelab-dashboard/url:   "http://..."
-  homelab-dashboard/enabled: "false"   # hide this service
+  homelab-dashboard/enabled: "false"   # hide
 ```
 
-**Docker containers** — add labels:
+**Docker containers** — labels:
 ```yaml
 labels:
   homelab-dashboard.name: "Jellyfin"
-  homelab-dashboard.group: "Media"
   homelab-dashboard.icon: "📺"
-  homelab-dashboard.enabled: "false"   # hide this container
+  homelab-dashboard.group: "Media"
+  homelab-dashboard.enabled: "false"   # hide
 ```
+
+---
+
+## Group Management
+
+The dashboard has a drag-and-drop group management UI:
+
+1. Click **+ New Group** to create a custom group (e.g., "Game Servers", "Movies")
+2. **Drag** any service card into a different group
+3. **Double-click** a group name to rename it
+4. Click **x** on a group header to delete it (services move to Uncategorized)
+
+Group layout is saved to your browser's localStorage.
+
+---
+
+## Multi-Network Access (LAN / ZeroTier / Tailscale)
+
+Each service card shows access buttons based on your configured IPs:
+
+| Button | When shown | URL format |
+|--------|-----------|------------|
+| **LAN** | Always (if LAN IP set) | `http://<LAN_IP>:<port>` |
+| **ZeroTier** | Only if ZT IP configured | `http://<ZT_IP>:<port>` |
+| **Tailscale** | Only if TS IP configured | `http://<TS_IP>:<port>` |
+
+Configure IPs in:
+- **`02-backend.yaml`** → env vars `DASHBOARD_LAN_IP`, `DASHBOARD_ZT_IP`, `DASHBOARD_TS_IP`
+- **Dashboard Settings** button → overrides stored in browser localStorage
 
 ---
 
 ## Updating Code
 
-After changing source files, re-run:
-
 ```bash
 ./deploy.sh
 ```
-
-It rebuilds images, re-imports them, and does a rolling restart.
-
----
-
-## Optional: Traefik Ingress (port 80)
-
-k3s ships with Traefik. Apply the ingress to access on port 80:
-
-```bash
-sudo kubectl apply -f 04-ingress.yaml
-```
-
-Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 
 ---
 
@@ -130,9 +152,8 @@ Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 | What | Command |
 |------|---------|
 | Check pod status | `sudo kubectl get pods -n homelab` |
-| Backend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
-| Frontend logs (live) | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
-| Describe a failing pod | `sudo kubectl describe pod -n homelab <pod-name>` |
+| Backend logs | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
+| Frontend logs | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
 | View k8s services | `sudo kubectl get svc -A` |
 | View Docker containers | `docker ps` |
 | Delete everything | `sudo kubectl delete namespace homelab` |
@@ -144,11 +165,11 @@ Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 | Setting | Why |
 |---------|-----|
 | `hostNetwork: true` | Sees host network interfaces for real I/O stats |
-| `hostPID: true` | Sees host processes for accurate CPU/load; `/proc/1/mounts` gives real host filesystems |
-| `/proc` mounted at `/host/proc` | psutil reads real host CPU, RAM, uptime |
-| `/sys` mounted at `/host/sys` | psutil reads real CPU temperature sensors |
-| `/` mounted at `/host/root` | psutil probes real disk usage through host root |
-| `docker.sock` mounted | Discovers running Docker containers and their ports |
+| `hostPID: true` | Sees host processes; `/proc/1/mounts` gives real host filesystems |
+| `/proc` → `/host/proc` | Real host CPU, RAM, uptime |
+| `/sys` → `/host/sys` | CPU temperature sensors |
+| `/` → `/host/root` | Real disk usage |
+| `docker.sock` mounted | Discovers running Docker containers |
 | `privileged: true` | Required to access all of the above |
 
 ---
@@ -157,21 +178,21 @@ Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 
 ```
 homelab_dashboard/
-├── main.py              # Backend API (FastAPI + psutil)
-├── Dockerfile           # Backend image
-├── requirements.txt     # Python dependencies
-├── package.json         # Frontend React dependencies
-├── src/                 # Frontend React source
-├── public/              # Frontend static assets
-├── nginx.conf           # Frontend nginx proxy config
-├── mnt/.../frontend/Dockerfile  # Frontend multi-stage build
-├── deploy.sh            # One-command build & deploy
-├── services.json        # Local dev fallback (empty by default)
-├── 00-namespace.yaml    # k8s Namespace
-├── 01-configmap.yaml    # Manual service additions (empty by default)
-├── 02-backend.yaml      # Backend Deployment + RBAC + Service
-├── 03-frontend.yaml     # Frontend Deployment + NodePort Service
-└── 04-ingress.yaml      # Optional Traefik Ingress
+├── main.py                          # Backend API (FastAPI + psutil)
+├── Dockerfile                       # Backend image
+├── requirements.txt
+├── package.json                     # Frontend React deps
+├── src/                             # Frontend source
+├── public/                          # Frontend static
+├── nginx.conf                       # Frontend nginx proxy config
+├── mnt/.../frontend/Dockerfile      # Frontend multi-stage build
+├── deploy.sh                        # One-command build & deploy
+├── services.json                    # Local dev fallback (empty)
+├── 00-namespace.yaml
+├── 01-configmap.yaml                # Manual service additions (empty)
+├── 02-backend.yaml                  # Backend + RBAC + IP config
+├── 03-frontend.yaml                 # Frontend + NodePort
+└── 04-ingress.yaml                  # Optional Traefik Ingress
 ```
 
 ---
@@ -179,6 +200,6 @@ homelab_dashboard/
 ## Notes
 
 - **Temperature** shows "Not available" if `lm-sensors` is not installed on the host.
-- **Disk panel** reads from `/host/proc/1/mounts` to show only real host filesystems (ext4, xfs, btrfs, etc.) — container overlays are filtered out.
-- **Service URLs** use `localhost` because `hostNetwork: true` makes localhost resolve to the host.
-- **Multi-node clusters:** The backend only reads metrics from whichever node it's scheduled on. Pin it with a `nodeSelector` in `02-backend.yaml` if needed.
+- **Disk panel** reads `/host/proc/1/mounts` to show only real host filesystems — container overlays are filtered out.
+- **Service URLs** use the configured `DASHBOARD_LAN_IP` instead of localhost.
+- **Multi-node clusters:** Pin the backend to a specific node with a `nodeSelector` in `02-backend.yaml`.

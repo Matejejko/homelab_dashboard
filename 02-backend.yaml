@@ -86,6 +86,16 @@ spec:
             # services.json is mounted from the ConfigMap
             - name: SERVICES_FILE
               value: /config/services.json
+            # Network IPs — frontend builds access URLs from these.
+            # Change these to match your network setup.
+            - name: DASHBOARD_LAN_IP
+              value: "192.168.0.101"
+            # Set your ZeroTier IP (leave empty to hide ZT button)
+            - name: DASHBOARD_ZT_IP
+              value: ""
+            # Set your Tailscale IP (leave empty to hide TS button)
+            - name: DASHBOARD_TS_IP
+              value: ""
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here
