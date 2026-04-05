@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 
+// ── Live Clock ────────────────────────────────────────────────────────────
+function useClock() {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  return now;
+}
+
 const API = process.env.REACT_APP_API_URL || '';
 const LS_KEY = 'homelab-dashboard-layout';
 
@@ -52,6 +59,12 @@ const S = {
   lanBtn: { background: '#1e3a5f', color: '#60a5fa' },
   ztBtn: { background: '#3d2e0a', color: '#f59e0b' },
   tsBtn: { background: '#2e1065', color: '#a78bfa' },
+  btnDisabled: { background: '#1a1c28', color: '#334155', cursor: 'default', opacity: 0.5 },
+  clock: { fontSize: '0.9rem', color: '#64748b', fontVariantNumeric: 'tabular-nums' },
+  netInfoRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' },
+  netInfoLabel: { fontSize: '0.72rem', fontWeight: 600, minWidth: '70px' },
+  netInfoVal: { fontSize: '0.82rem', color: '#f1f5f9', fontFamily: 'monospace' },
+  netInfoNone: { fontSize: '0.82rem', color: '#334155', fontStyle: 'italic' },
   // modal
   overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
   modal: { background: '#1e2130', border: '1px solid #2d3148', borderRadius: '14px', padding: '24px', minWidth: '340px', maxWidth: '90vw' },
@@ -145,6 +158,28 @@ function DisksCard({ disks }) {
   );
 }
 
+// ── Network Info Card ──────────────────────────────────────────────────────
+function NetInfoCard({ netCfg, onOpenSettings }) {
+  const entries = [
+    { label: 'LAN', ip: netCfg.lanIp, color: '#60a5fa' },
+    { label: 'ZeroTier', ip: netCfg.ztIp, color: '#f59e0b' },
+    { label: 'Tailscale', ip: netCfg.tsIp, color: '#a78bfa' },
+  ];
+  return (
+    <StatCard title="Network IPs">
+      {entries.map(e => (
+        <div key={e.label} style={S.netInfoRow}>
+          <span style={{ ...S.netInfoLabel, color: e.color }}>{e.label}</span>
+          {e.ip ? <span style={S.netInfoVal}>{e.ip}</span> : <span style={S.netInfoNone}>not set</span>}
+        </div>
+      ))}
+      <div style={{ marginTop: '8px' }}>
+        <button style={{ ...S.btn, fontSize: '0.7rem', padding: '3px 10px' }} onClick={onOpenSettings}>Edit IPs</button>
+      </div>
+    </StatCard>
+  );
+}
+
 // ── Settings Modal ─────────────────────────────────────────────────────────
 function SettingsModal({ net, onSave, onClose }) {
   const [lan, setLan] = useState(net.lanIp || '');
@@ -176,7 +211,7 @@ function ServiceCard({ svc, netCfg, onDragStart }) {
   const port = svc.port;
   const { lanIp, ztIp, tsIp } = netCfg;
 
-  const lanUrl = port && lanIp ? `http://${lanIp}:${port}` : svc.url;
+  const lanUrl = port && lanIp ? `http://${lanIp}:${port}` : (lanIp && svc.url ? svc.url.replace('localhost', lanIp) : svc.url);
   const ztUrl  = port && ztIp  ? `http://${ztIp}:${port}` : null;
   const tsUrl  = port && tsIp  ? `http://${tsIp}:${port}` : null;
 
@@ -194,9 +229,15 @@ function ServiceCard({ svc, netCfg, onDragStart }) {
       {svc.desc && <div style={S.svcDesc}>{svc.desc}</div>}
       {svc.ping_ms != null && <div style={S.ping}>{svc.ping_ms} ms</div>}
       <div style={S.svcBtns}>
-        {lanUrl && <a href={lanUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.lanBtn }}>LAN</a>}
-        {ztUrl && <a href={ztUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.ztBtn }}>ZeroTier</a>}
-        {tsUrl && <a href={tsUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.tsBtn }}>Tailscale</a>}
+        {lanUrl
+          ? <a href={lanUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.lanBtn }}>LAN</a>
+          : <span style={{ ...S.accessBtn, ...S.lanBtn, ...S.btnDisabled }} title="Set LAN IP in Settings">LAN</span>}
+        {ztUrl
+          ? <a href={ztUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.ztBtn }}>ZeroTier</a>
+          : <span style={{ ...S.accessBtn, ...S.ztBtn, ...S.btnDisabled }} title="Set ZeroTier IP in Settings">ZeroTier</span>}
+        {tsUrl
+          ? <a href={tsUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.accessBtn, ...S.tsBtn }}>Tailscale</a>
+          : <span style={{ ...S.accessBtn, ...S.tsBtn, ...S.btnDisabled }} title="Set Tailscale IP in Settings">Tailscale</span>}
       </div>
     </div>
   );
@@ -251,6 +292,7 @@ function GroupSection({ name, services, netCfg, onDrop, onRename, onDelete, onDr
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
+  const clock = useClock();
   const [system, setSystem]     = useState(null);
   const [services, setServices] = useState([]);
   const [sysErr, setSysErr]     = useState(null);
@@ -384,6 +426,7 @@ export default function App() {
           <div style={S.subtitle}>System metrics · Service status</div>
         </div>
         <div style={S.headerRight}>
+          <span style={S.clock}>{clock.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })} {clock.toLocaleTimeString()}</span>
           <button style={S.btn} onClick={addGroup}>+ New Group</button>
           <button style={S.btn} onClick={() => setShowSettings(true)}>Settings</button>
         </div>
@@ -402,6 +445,7 @@ export default function App() {
           <UptimeCard uptime={system.uptime} />
           <NetworkCard net={system.network} />
           {system.disks?.length > 0 && <DisksCard disks={system.disks} />}
+          <NetInfoCard netCfg={layout.networkConfig} onOpenSettings={() => setShowSettings(true)} />
         </div>
       )}
 
