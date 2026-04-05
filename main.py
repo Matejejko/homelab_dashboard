@@ -7,10 +7,12 @@ Services are auto-discovered from:
   3. ConfigMap / services.json (manual additions)
 """
 
+import ipaddress
 import json
 import logging
 import os
 import socket
+import struct
 import time
 import asyncio
 from pathlib import Path
@@ -463,6 +465,147 @@ async def get_services():
         return {**svc, "status": status, "ping_ms": ping_ms}
 
     return list(await asyncio.gather(*[check(s) for s in services]))
+
+
+# ─── Device detection via /proc/net/tcp ──────────────────────────────────────
+
+_geo_cache: dict[str, dict] = {}   # ip → {lat, lng, city, country, ts}
+_GEO_TTL = 300  # 5 minutes
+
+
+def _parse_proc_net_tcp() -> dict[str, set[int]]:
+    """Parse /proc/net/tcp for ESTABLISHED connections. Returns {remote_ip: {local_ports}}."""
+    tcp_path = Path(HOST_PROC) / "net" / "tcp"
+    result: dict[str, set[int]] = {}
+    try:
+        lines = tcp_path.read_text().splitlines()[1:]  # skip header
+    except OSError:
+        return result
+
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        state = parts[3]
+        if state != "01":  # 01 = ESTABLISHED
+            continue
+
+        local_hex, remote_hex = parts[1], parts[2]
+
+        # Parse local port
+        local_port = int(local_hex.split(":")[1], 16)
+
+        # Parse remote IP:port (little-endian hex)
+        r_ip_hex, r_port_hex = remote_hex.split(":")
+        r_ip_int = struct.unpack("<I", bytes.fromhex(r_ip_hex))[0]
+        r_ip = str(ipaddress.IPv4Address(r_ip_int))
+
+        # Skip loopback and 0.0.0.0
+        if r_ip.startswith("127.") or r_ip == "0.0.0.0":
+            continue
+
+        if r_ip not in result:
+            result[r_ip] = set()
+        result[r_ip].add(local_port)
+
+    return result
+
+
+async def _geolocate_ips(ips: list[str]) -> dict[str, dict]:
+    """Batch-geolocate public IPs via ip-api.com. Uses in-memory cache."""
+    now = time.time()
+    results: dict[str, dict] = {}
+    to_lookup: list[str] = []
+
+    for ip in ips:
+        cached = _geo_cache.get(ip)
+        if cached and (now - cached["ts"]) < _GEO_TTL:
+            results[ip] = cached
+        else:
+            to_lookup.append(ip)
+
+    if to_lookup:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.post(
+                    "http://ip-api.com/batch",
+                    json=[{"query": ip, "fields": "query,lat,lon,city,country,status"} for ip in to_lookup[:100]],
+                )
+                for item in r.json():
+                    if item.get("status") == "success":
+                        entry = {
+                            "lat": item["lat"],
+                            "lng": item["lon"],
+                            "city": item.get("city", ""),
+                            "country": item.get("country", ""),
+                            "ts": now,
+                        }
+                        _geo_cache[item["query"]] = entry
+                        results[item["query"]] = entry
+        except Exception as exc:
+            logger.debug("Geolocation failed: %s", exc)
+
+    return results
+
+
+@app.get("/api/devices")
+async def get_devices():
+    """Scan TCP connections and return connected devices with geolocation."""
+    connections = _parse_proc_net_tcp()
+    if not connections:
+        return {"devices": [], "total": 0}
+
+    # Map local ports to service names
+    try:
+        svcs = load_services()
+        port_to_svc = {}
+        for s in svcs:
+            if s.get("port"):
+                port_to_svc[s["port"]] = s["name"]
+    except Exception:
+        port_to_svc = {}
+
+    devices = []
+    public_ips = []
+
+    for ip, local_ports in connections.items():
+        try:
+            is_private = ipaddress.ip_address(ip).is_private
+        except ValueError:
+            continue
+
+        svc_names = sorted({port_to_svc[p] for p in local_ports if p in port_to_svc})
+
+        device = {
+            "ip": ip,
+            "ports": sorted(local_ports),
+            "connections": len(local_ports),
+            "services": svc_names,
+            "type": "lan" if is_private else "wan",
+            "lat": None,
+            "lng": None,
+            "city": "",
+            "country": "",
+        }
+        devices.append(device)
+        if not is_private:
+            public_ips.append(ip)
+
+    # Geolocate public IPs
+    if public_ips:
+        geo = await _geolocate_ips(public_ips)
+        for d in devices:
+            if d["ip"] in geo:
+                g = geo[d["ip"]]
+                d["lat"] = g["lat"]
+                d["lng"] = g["lng"]
+                d["city"] = g["city"]
+                d["country"] = g["country"]
+
+    # Sort: public (with location) first, then by connections desc
+    devices.sort(key=lambda d: (d["type"] == "lan", -d["connections"]))
+
+    return {"devices": devices, "total": len(devices)}
 
 
 # ─── Health check ─────────────────────────────────────────────────────────────

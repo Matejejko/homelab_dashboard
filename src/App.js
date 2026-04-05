@@ -183,7 +183,7 @@ function NetInfoCard({ netCfg, onOpenSettings }) {
 }
 
 // ── World Map ──────────────────────────────────────────────────────────────
-const TYPE_COLORS = { lan: '#60a5fa', zerotier: '#f59e0b', tailscale: '#a78bfa' };
+const TYPE_COLORS = { lan: '#60a5fa', zerotier: '#f59e0b', tailscale: '#a78bfa', wan: '#f59e0b' };
 
 function WorldMap({ serverLoc, devices }) {
   const mapRef = useRef(null);
@@ -228,7 +228,34 @@ function WorldMap({ serverLoc, devices }) {
     });
   }, [serverLoc, devices]);
 
-  return <div ref={mapRef} style={{ height: '300px', borderRadius: '12px', border: '1px solid #2d3148' }} />;
+  return <div ref={mapRef} style={{ height: '100%', minHeight: '400px', borderRadius: '12px', border: '1px solid #2d3148' }} />;
+}
+
+// ── Device List ───────────────────────────────────────────────────────────
+function DeviceList({ devices }) {
+  if (!devices || devices.length === 0) {
+    return <div style={{ color: '#475569', fontSize: '0.82rem', fontStyle: 'italic', padding: '12px 0' }}>No active connections detected</div>;
+  }
+  return (
+    <div style={{ overflowY: 'auto', maxHeight: '400px' }}>
+      {devices.map((d, i) => (
+        <div key={i} style={{ padding: '8px 10px', borderBottom: '1px solid #1a1c28', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: d.type === 'lan' ? '#60a5fa' : '#f59e0b' }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', color: '#f1f5f9', fontFamily: 'monospace' }}>{d.ip}</div>
+            <div style={{ fontSize: '0.68rem', color: '#64748b' }}>
+              {d.city && d.country ? `${d.city}, ${d.country}` : d.type === 'lan' ? 'LAN' : 'Unknown'}
+              {d.services && d.services.length > 0 && ` · ${d.services.join(', ')}`}
+            </div>
+          </div>
+          <div style={{ fontSize: '0.7rem', color: '#475569', textAlign: 'right', flexShrink: 0 }}>
+            <div>{d.connections} conn</div>
+            <div style={{ textTransform: 'uppercase', fontSize: '0.6rem' }}>{d.type}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // ── Settings Modal ─────────────────────────────────────────────────────────
@@ -470,6 +497,7 @@ export default function App() {
   const [svcErr, setSvcErr]     = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [editingSvc, setEditingSvc] = useState(null); // service being edited
+  const [autoDevices, setAutoDevices] = useState([]); // auto-detected from /api/devices
 
   // Layout: { groups, assignments, networkConfig, serviceOverrides, serverLocation, devices }
   const [layout, setLayout] = useState(() => {
@@ -516,10 +544,12 @@ export default function App() {
   useEffect(() => {
     const fetchSys = () => fetch(`${API}/api/system`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(d => { setSystem(d); setSysErr(null); }).catch(e => setSysErr(e.message));
     const fetchSvc = () => fetch(`${API}/api/services`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(d => { setServices(d); setSvcErr(null); }).catch(e => setSvcErr(e.message));
-    fetchSys(); fetchSvc();
+    const fetchDevices = () => fetch(`${API}/api/devices`).then(r => r.json()).then(d => setAutoDevices(d.devices || [])).catch(() => {});
+    fetchSys(); fetchSvc(); fetchDevices();
     const t1 = setInterval(fetchSys, 5000);
     const t2 = setInterval(fetchSvc, 15000);
-    return () => { clearInterval(t1); clearInterval(t2); };
+    const t3 = setInterval(fetchDevices, 10000);
+    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); };
   }, []);
 
   // Auto-create groups from services if layout is empty
@@ -648,22 +678,6 @@ export default function App() {
         </div>
       )}
 
-      {/* World Map */}
-      {(layout.serverLocation.lat || layout.serverLocation.lng || layout.devices.length > 0) && (
-        <div style={{ marginBottom: '28px' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Server &amp; Devices</div>
-          <WorldMap serverLoc={layout.serverLocation} devices={layout.devices} />
-          {layout.devices.length > 0 && (
-            <div style={{ display: 'flex', gap: '16px', marginTop: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e', marginRight: '4px' }}></span>Server</span>
-              {layout.devices.some(d => d.type === 'lan') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#60a5fa', marginRight: '4px' }}></span>LAN</span>}
-              {layout.devices.some(d => d.type === 'zerotier') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#f59e0b', marginRight: '4px' }}></span>ZeroTier</span>}
-              {layout.devices.some(d => d.type === 'tailscale') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#a78bfa', marginRight: '4px' }}></span>Tailscale</span>}
-            </div>
-          )}
-        </div>
-      )}
-
       {svcErr && <div style={S.error}>Services API: {svcErr}</div>}
 
       {/* Service Groups */}
@@ -680,6 +694,45 @@ export default function App() {
           onEditSvc={svc => setEditingSvc(svc)}
         />
       ))}
+
+      {/* Connected Devices & Map */}
+      {(() => {
+        const sLoc = layout.serverLocation;
+        // Merge auto-detected devices (from API) with manual devices (from settings)
+        const mapDevices = [
+          ...autoDevices.filter(d => d.lat && d.lng).map(d => ({ name: `${d.ip}${d.city ? ' — ' + d.city : ''}`, lat: d.lat, lng: d.lng, type: d.type === 'lan' ? 'lan' : 'wan' })),
+          ...(layout.devices || []),
+        ];
+        const allDevices = autoDevices;
+        const hasMap = sLoc.lat || sLoc.lng || mapDevices.length > 0;
+
+        return (hasMap || allDevices.length > 0) ? (
+          <div style={{ marginTop: '28px', marginBottom: '28px' }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Connected Devices &amp; Map</div>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+              {/* Left — Device List */}
+              <div style={{ flex: '1 1 300px', minWidth: '280px', background: '#1e2130', borderRadius: '12px', border: '1px solid #2d3148', padding: '14px' }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#94a3b8', marginBottom: '10px' }}>
+                  Active Connections ({allDevices.length})
+                </div>
+                <DeviceList devices={allDevices} />
+                {/* Legend */}
+                <div style={{ display: 'flex', gap: '12px', marginTop: '10px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#60a5fa', marginRight: '3px' }} />LAN</span>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#f59e0b', marginRight: '3px' }} />WAN</span>
+                  <span style={{ fontSize: '0.68rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#22c55e', marginRight: '3px' }} />Server</span>
+                </div>
+              </div>
+              {/* Right — Map */}
+              {hasMap && (
+                <div style={{ flex: '1.5 1 400px', minHeight: '400px' }}>
+                  <WorldMap serverLoc={sLoc} devices={mapDevices} />
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null;
+      })()}
 
       {services.length === 0 && !svcErr && (
         <div style={{ color: '#475569', fontSize: '0.85rem', textAlign: 'center', padding: '24px' }}>
