@@ -8,7 +8,8 @@ Browser → NodePort :30300 → frontend (nginx)
                                 └── /api/*     → backend pod :8000
                                                     ├── /api/system    (psutil → host /proc /sys)
                                                     ├── /api/services  (k8s + Docker auto-discovery)
-                                                    └── /api/config    (network IPs for LAN/ZT/TS)
+                                                    ├── /api/config    (network IPs for LAN/ZT/TS)
+                                                    └── /api/devices   (conntrack → connected clients)
 ```
 
 ---
@@ -61,9 +62,9 @@ env:
 
   # ── Server location for the world map ──
   - name: DASHBOARD_SERVER_LAT
-    value: "48.1486"
+    value: "48.946"
   - name: DASHBOARD_SERVER_LNG
-    value: "17.1077"
+    value: "20.566"
 ```
 
 ### 3 — Run the deploy script
@@ -208,25 +209,61 @@ Group layout is saved to your browser's localStorage.
 
 ---
 
-## World Map
+## World Map & Connected Devices
 
-The dashboard includes an interactive world map (Leaflet.js with CartoDB Dark tiles) showing:
+The dashboard includes an interactive world map (Leaflet.js with CartoDB Dark tiles) displayed below the services section in a two-column layout: device list on the left, map on the right.
 
-- **Server location** — green pin, configured via `DASHBOARD_SERVER_LAT`/`DASHBOARD_SERVER_LNG` env vars or Settings UI
-- **Connected devices** — colored pins (blue=LAN, orange=ZeroTier, purple=Tailscale)
-- **Connection lines** — dashed lines from each device to the server, color-coded by network type
+### Auto-detected devices
 
-### Adding devices
+The backend scans the kernel's **conntrack** table (`conntrack -L`) to detect clients actively connected to your services. This sees through kube-proxy's NAT, so it works with k3s NodePort services, Tailscale tunnels, etc.
+
+Devices are shown with colored pins and listed with connection details:
+
+| Type | Color | How detected |
+|------|-------|-------------|
+| **LAN** | Blue | Private IPs (192.168.x.x, etc.) |
+| **Tailscale** | Purple | CGNAT range (100.64.0.0/10) |
+| **ZeroTier** | Orange | ZeroTier range (10.147.0.0/16) |
+| **WAN** | Orange | Public IPs — geolocated via ip-api.com |
+| **Server** | Green | Your server location |
+
+- **WAN devices** are pinned at their geolocated position on the map
+- **LAN/Tailscale/ZeroTier devices** are pinned near the server (private IPs can't be geolocated)
+- Connection lines are drawn from each device to the server
+- The device list shows IP, location/type, connection count, and which services are being accessed
+- Devices are fetched every 10 seconds from `/api/devices`
+
+### conntrack setup
+
+The backend Docker image includes the `conntrack` CLI tool. For it to work properly:
+
+```bash
+# Load the conntrack kernel module
+sudo modprobe nf_conntrack
+
+# Make it persist across reboots
+echo nf_conntrack | sudo tee /etc/modules-load.d/nf_conntrack.conf
+
+# (Optional) Reduce timeout so devices disappear faster after disconnecting
+# Default is 432000 (5 days) — set to 300 (5 minutes):
+sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300
+
+# Make timeout persistent
+echo "net.netfilter.nf_conntrack_tcp_timeout_established=300" | sudo tee -a /etc/sysctl.d/99-conntrack.conf
+```
+
+### Manual devices
+
+You can also add devices manually via the Settings modal:
 
 1. Open **Settings** in the dashboard
 2. Scroll to **Connected Devices**
-3. Enter device name, latitude, longitude, and connection type (LAN/ZeroTier/Tailscale)
-4. Click **+** to add
-5. Click **Save**
+3. Enter device name, latitude, longitude, and connection type
+4. Click **+** to add, then **Save**
 
 To find coordinates: search your city on Google Maps, right-click the pin, and copy the lat/lng.
 
-Devices are stored in your browser's localStorage. The map only appears when a server location or at least one device is configured.
+Manual devices are stored in your browser's localStorage. The map appears when a server location or at least one device is configured.
 
 ---
 
@@ -291,7 +328,8 @@ Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 | `/sys` → `/host/sys` | CPU temperature sensors |
 | `/` → `/host/root` | Real disk usage |
 | `docker.sock` mounted | Discovers running Docker containers |
-| `privileged: true` | Required to access all of the above |
+| `privileged: true` | Required to access all of the above + run `conntrack` |
+| `conntrack` CLI | Reads kernel connection tracking to detect connected clients |
 
 ---
 
