@@ -58,6 +58,12 @@ env:
   # ── Disk filter (see "Disk Monitoring" section below) ──
   - name: DASHBOARD_DISKS
     value: ""
+
+  # ── Server location for the world map ──
+  - name: DASHBOARD_SERVER_LAT
+    value: "48.1486"
+  - name: DASHBOARD_SERVER_LNG
+    value: "17.1077"
 ```
 
 ### 3 — Run the deploy script
@@ -85,6 +91,8 @@ All configuration is done via environment variables in `02-backend.yaml`.
 | `DASHBOARD_ZT_IP` | *(empty)* | ZeroTier IP — leave empty to disable ZT button |
 | `DASHBOARD_TS_IP` | *(empty)* | Tailscale IP — leave empty to disable TS button |
 | `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names to monitor |
+| `DASHBOARD_SERVER_LAT` | `0` | Server latitude for the world map |
+| `DASHBOARD_SERVER_LNG` | `0` | Server longitude for the world map |
 
 You can also override LAN/ZT/TS IPs from the dashboard UI via **Settings** (saved to browser localStorage).
 
@@ -197,6 +205,28 @@ The dashboard has a drag-and-drop group management UI:
 4. Click **x** on a group header to delete it (services move to Uncategorized)
 
 Group layout is saved to your browser's localStorage.
+
+---
+
+## World Map
+
+The dashboard includes an interactive world map (Leaflet.js with CartoDB Dark tiles) showing:
+
+- **Server location** — green pin, configured via `DASHBOARD_SERVER_LAT`/`DASHBOARD_SERVER_LNG` env vars or Settings UI
+- **Connected devices** — colored pins (blue=LAN, orange=ZeroTier, purple=Tailscale)
+- **Connection lines** — dashed lines from each device to the server, color-coded by network type
+
+### Adding devices
+
+1. Open **Settings** in the dashboard
+2. Scroll to **Connected Devices**
+3. Enter device name, latitude, longitude, and connection type (LAN/ZeroTier/Tailscale)
+4. Click **+** to add
+5. Click **Save**
+
+To find coordinates: search your city on Google Maps, right-click the pin, and copy the lat/lng.
+
+Devices are stored in your browser's localStorage. The map only appears when a server location or at least one device is configured.
 
 ---
 

@@ -182,25 +182,131 @@ function NetInfoCard({ netCfg, onOpenSettings }) {
   );
 }
 
+// ── World Map ──────────────────────────────────────────────────────────────
+const TYPE_COLORS = { lan: '#60a5fa', zerotier: '#f59e0b', tailscale: '#a78bfa' };
+
+function WorldMap({ serverLoc, devices }) {
+  const mapRef = useRef(null);
+  const mapInst = useRef(null);
+  const layerRef = useRef(null);
+
+  // Init map once
+  useEffect(() => {
+    const L = window.L;
+    if (!L || !mapRef.current || mapInst.current) return;
+    const map = L.map(mapRef.current, { zoomControl: true, attributionControl: true, scrollWheelZoom: true })
+      .setView([serverLoc.lat || 30, serverLoc.lng || 0], serverLoc.lat ? 4 : 2);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: 'CartoDB',
+      subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    mapInst.current = map;
+    layerRef.current = L.layerGroup().addTo(map);
+    return () => { map.remove(); mapInst.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Update markers when data changes
+  useEffect(() => {
+    const L = window.L;
+    if (!L || !mapInst.current || !layerRef.current) return;
+    layerRef.current.clearLayers();
+
+    const sLat = serverLoc.lat, sLng = serverLoc.lng;
+    if (sLat || sLng) {
+      const serverIcon = L.divIcon({ className: '', html: '<div style="width:14px;height:14px;background:#22c55e;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #22c55e"></div>', iconSize: [14, 14], iconAnchor: [7, 7] });
+      L.marker([sLat, sLng], { icon: serverIcon }).addTo(layerRef.current).bindPopup('<b>Server</b>');
+    }
+
+    (devices || []).forEach(d => {
+      if (!d.lat && !d.lng) return;
+      const color = TYPE_COLORS[d.type] || '#94a3b8';
+      const devIcon = L.divIcon({ className: '', html: `<div style="width:10px;height:10px;background:${color};border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px ${color}"></div>`, iconSize: [10, 10], iconAnchor: [5, 5] });
+      L.marker([d.lat, d.lng], { icon: devIcon }).addTo(layerRef.current).bindPopup(`<b>${d.name}</b><br/>${d.type}`);
+      if (sLat || sLng) {
+        L.polyline([[sLat, sLng], [d.lat, d.lng]], { color, weight: 1.5, opacity: 0.4, dashArray: '6 4' }).addTo(layerRef.current);
+      }
+    });
+  }, [serverLoc, devices]);
+
+  return <div ref={mapRef} style={{ height: '300px', borderRadius: '12px', border: '1px solid #2d3148' }} />;
+}
+
 // ── Settings Modal ─────────────────────────────────────────────────────────
-function SettingsModal({ net, onSave, onClose }) {
+function SettingsModal({ net, serverLoc, devices, onSave, onClose }) {
   const [lan, setLan] = useState(net.lanIp || '');
   const [zt, setZt]   = useState(net.ztIp || '');
   const [ts, setTs]   = useState(net.tsIp || '');
+  const [sLat, setSLat] = useState(serverLoc.lat || '');
+  const [sLng, setSLng] = useState(serverLoc.lng || '');
+  const [devs, setDevs] = useState(devices || []);
+  const [newDev, setNewDev] = useState({ name: '', lat: '', lng: '', type: 'lan' });
+
+  const addDevice = () => {
+    if (!newDev.name.trim() || !newDev.lat || !newDev.lng) return;
+    setDevs([...devs, { name: newDev.name.trim(), lat: parseFloat(newDev.lat), lng: parseFloat(newDev.lng), type: newDev.type }]);
+    setNewDev({ name: '', lat: '', lng: '', type: 'lan' });
+  };
+
+  const removeDevice = (i) => setDevs(devs.filter((_, idx) => idx !== i));
 
   return (
     <div style={S.overlay} onClick={onClose}>
-      <div style={S.modal} onClick={e => e.stopPropagation()}>
-        <div style={S.modalTitle}>Network Settings</div>
+      <div style={{ ...S.modal, maxHeight: '85vh', overflowY: 'auto', minWidth: '400px' }} onClick={e => e.stopPropagation()}>
+        <div style={S.modalTitle}>Settings</div>
+
+        {/* Network IPs */}
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginTop: '8px', marginBottom: '4px' }}>Network IPs</div>
         <label style={S.label}>LAN IP</label>
         <input style={S.input} value={lan} onChange={e => setLan(e.target.value)} placeholder="192.168.0.101" />
         <label style={S.label}>ZeroTier IP</label>
-        <input style={S.input} value={zt} onChange={e => setZt(e.target.value)} placeholder="e.g. 10.147.20.x (leave empty to hide)" />
+        <input style={S.input} value={zt} onChange={e => setZt(e.target.value)} placeholder="e.g. 10.147.20.x" />
         <label style={S.label}>Tailscale IP</label>
-        <input style={S.input} value={ts} onChange={e => setTs(e.target.value)} placeholder="e.g. 100.x.x.x (leave empty to hide)" />
-        <div style={{ display: 'flex', gap: '8px', marginTop: '18px', justifyContent: 'flex-end' }}>
+        <input style={S.input} value={ts} onChange={e => setTs(e.target.value)} placeholder="e.g. 100.x.x.x" />
+
+        {/* Server Location */}
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginTop: '18px', marginBottom: '4px' }}>Server Location (map pin)</div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ flex: 1 }}><label style={S.label}>Latitude</label><input style={S.input} value={sLat} onChange={e => setSLat(e.target.value)} placeholder="48.1486" /></div>
+          <div style={{ flex: 1 }}><label style={S.label}>Longitude</label><input style={S.input} value={sLng} onChange={e => setSLng(e.target.value)} placeholder="17.1077" /></div>
+        </div>
+
+        {/* Connected Devices */}
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginTop: '18px', marginBottom: '4px' }}>Connected Devices (map pins)</div>
+        {devs.map((d, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', borderBottom: '1px solid #1a1c28' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: TYPE_COLORS[d.type] || '#94a3b8', flexShrink: 0 }} />
+            <span style={{ fontSize: '0.8rem', color: '#e2e8f0', flex: 1 }}>{d.name}</span>
+            <span style={{ fontSize: '0.7rem', color: '#64748b' }}>{d.lat}, {d.lng}</span>
+            <span style={{ fontSize: '0.65rem', color: '#475569', textTransform: 'uppercase' }}>{d.type}</span>
+            <button style={{ ...S.btn, padding: '1px 6px', fontSize: '0.7rem' }} onClick={() => removeDevice(i)}>x</button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: '4px', marginTop: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div style={{ flex: '2 1 100px' }}><label style={{ ...S.label, marginTop: 0 }}>Name</label><input style={S.input} value={newDev.name} onChange={e => setNewDev({ ...newDev, name: e.target.value })} placeholder="My Laptop" /></div>
+          <div style={{ flex: '1 1 60px' }}><label style={{ ...S.label, marginTop: 0 }}>Lat</label><input style={S.input} value={newDev.lat} onChange={e => setNewDev({ ...newDev, lat: e.target.value })} placeholder="52.52" /></div>
+          <div style={{ flex: '1 1 60px' }}><label style={{ ...S.label, marginTop: 0 }}>Lng</label><input style={S.input} value={newDev.lng} onChange={e => setNewDev({ ...newDev, lng: e.target.value })} placeholder="13.41" /></div>
+          <div style={{ flex: '1 1 80px' }}>
+            <label style={{ ...S.label, marginTop: 0 }}>Type</label>
+            <select style={{ ...S.input, cursor: 'pointer' }} value={newDev.type} onChange={e => setNewDev({ ...newDev, type: e.target.value })}>
+              <option value="lan">LAN</option>
+              <option value="zerotier">ZeroTier</option>
+              <option value="tailscale">Tailscale</option>
+            </select>
+          </div>
+          <button style={{ ...S.btn, ...S.btnPrimary, padding: '8px 12px', marginBottom: '0' }} onClick={addDevice}>+</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '20px', justifyContent: 'flex-end' }}>
           <button style={S.btn} onClick={onClose}>Cancel</button>
-          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => { onSave({ lanIp: lan, ztIp: zt, tsIp: ts }); onClose(); }}>Save</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => {
+            onSave({
+              networkConfig: { lanIp: lan, ztIp: zt, tsIp: ts },
+              serverLocation: { lat: parseFloat(sLat) || 0, lng: parseFloat(sLng) || 0 },
+              devices: devs,
+            });
+            onClose();
+          }}>Save</button>
         </div>
       </div>
     </div>
@@ -366,7 +472,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [editingSvc, setEditingSvc] = useState(null); // service being edited
 
-  // Layout: { groups, assignments, networkConfig, serviceOverrides }
+  // Layout: { groups, assignments, networkConfig, serviceOverrides, serverLocation, devices }
   const [layout, setLayout] = useState(() => {
     const saved = loadLayout();
     return {
@@ -374,6 +480,8 @@ export default function App() {
       assignments: saved.assignments || {},
       networkConfig: saved.networkConfig || { lanIp: '', ztIp: '', tsIp: '' },
       serviceOverrides: saved.serviceOverrides || {},
+      serverLocation: saved.serverLocation || { lat: 0, lng: 0 },
+      devices: saved.devices || [],
     };
   });
 
@@ -385,15 +493,21 @@ export default function App() {
     });
   }, []);
 
-  // Fetch backend config for default IPs on mount
+  // Fetch backend config for default IPs + server location on mount
   useEffect(() => {
     fetch(`${API}/api/config`).then(r => r.json()).then(cfg => {
       setLayout(prev => {
+        let changed = false;
+        const next = { ...prev };
         if (!prev.networkConfig.lanIp && cfg.lan_ip) {
-          const next = { ...prev, networkConfig: { ...prev.networkConfig, lanIp: cfg.lan_ip, ztIp: prev.networkConfig.ztIp || cfg.zt_ip, tsIp: prev.networkConfig.tsIp || cfg.ts_ip } };
-          saveLayout(next);
-          return next;
+          next.networkConfig = { ...prev.networkConfig, lanIp: cfg.lan_ip, ztIp: prev.networkConfig.ztIp || cfg.zt_ip, tsIp: prev.networkConfig.tsIp || cfg.ts_ip };
+          changed = true;
         }
+        if (!prev.serverLocation.lat && !prev.serverLocation.lng && (cfg.server_lat || cfg.server_lng)) {
+          next.serverLocation = { lat: cfg.server_lat || 0, lng: cfg.server_lng || 0 };
+          changed = true;
+        }
+        if (changed) { saveLayout(next); return next; }
         return prev;
       });
     }).catch(() => {});
@@ -470,8 +584,13 @@ export default function App() {
     persist(prev => ({ ...prev, assignments: { ...prev.assignments, [svcName]: toGroup } }));
   };
 
-  const saveNetConfig = (cfg) => {
-    persist(prev => ({ ...prev, networkConfig: cfg }));
+  const saveSettings = (data) => {
+    persist(prev => ({
+      ...prev,
+      networkConfig: data.networkConfig,
+      serverLocation: data.serverLocation,
+      devices: data.devices,
+    }));
   };
 
   const saveServiceOverrides = (overrides) => {
@@ -504,7 +623,7 @@ export default function App() {
         </div>
       </div>
 
-      {showSettings && <SettingsModal net={layout.networkConfig} onSave={saveNetConfig} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal net={layout.networkConfig} serverLoc={layout.serverLocation} devices={layout.devices} onSave={saveSettings} onClose={() => setShowSettings(false)} />}
       {editingSvc && <ServiceEditModal svc={editingSvc} overrides={layout.serviceOverrides} onSave={saveServiceOverrides} onClose={() => setEditingSvc(null)} />}
 
       {sysErr && <div style={S.error}>System API: {sysErr}</div>}
@@ -527,6 +646,22 @@ export default function App() {
           {['CPU', 'Memory', 'Temperature', 'Uptime', 'Network'].map(t => (
             <div key={t} style={{ ...S.card, opacity: 0.4 }}><div style={S.cardTitle}>{t}</div><div style={{ color: '#475569' }}>Loading...</div></div>
           ))}
+        </div>
+      )}
+
+      {/* World Map */}
+      {(layout.serverLocation.lat || layout.serverLocation.lng || layout.devices.length > 0) && (
+        <div style={{ marginBottom: '28px' }}>
+          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Server &amp; Devices</div>
+          <WorldMap serverLoc={layout.serverLocation} devices={layout.devices} />
+          {layout.devices.length > 0 && (
+            <div style={{ display: 'flex', gap: '16px', marginTop: '8px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e', marginRight: '4px' }}></span>Server</span>
+              {layout.devices.some(d => d.type === 'lan') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#60a5fa', marginRight: '4px' }}></span>LAN</span>}
+              {layout.devices.some(d => d.type === 'zerotier') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#f59e0b', marginRight: '4px' }}></span>ZeroTier</span>}
+              {layout.devices.some(d => d.type === 'tailscale') && <span style={{ fontSize: '0.72rem', color: '#475569' }}><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#a78bfa', marginRight: '4px' }}></span>Tailscale</span>}
+            </div>
+          )}
         </div>
       )}
 

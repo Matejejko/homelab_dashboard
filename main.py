@@ -65,6 +65,10 @@ TS_IP = os.environ.get("DASHBOARD_TS_IP", "")
 # Empty = show all real block devices. Example: "/, /home, /data"
 DASHBOARD_DISKS = os.environ.get("DASHBOARD_DISKS", "")
 
+# Server location for the map (latitude, longitude)
+SERVER_LAT = float(os.environ.get("DASHBOARD_SERVER_LAT", "0"))
+SERVER_LNG = float(os.environ.get("DASHBOARD_SERVER_LNG", "0"))
+
 # ─── Image-based service identification ──────────────────────────────────────
 # Maps a keyword found in Docker image names or k8s service names to display info.
 # Only used for pretty names and icons — does NOT add phantom services.
@@ -381,7 +385,10 @@ def _host_disks() -> list[dict]:
 @app.get("/api/config")
 def get_config():
     """Return network IPs so the frontend can build per-network access URLs."""
-    return {"lan_ip": LAN_IP, "zt_ip": ZT_IP, "ts_ip": TS_IP}
+    return {
+        "lan_ip": LAN_IP, "zt_ip": ZT_IP, "ts_ip": TS_IP,
+        "server_lat": SERVER_LAT, "server_lng": SERVER_LNG,
+    }
 
 
 # ─── /api/system ─────────────────────────────────────────────────────────────

@@ -100,6 +100,11 @@ spec:
             # Empty = show all real block devices. Example: "/, /home, /data"
             - name: DASHBOARD_DISKS
               value: ""
+            # Server location for the world map (latitude, longitude)
+            - name: DASHBOARD_SERVER_LAT
+              value: "48.1486"
+            - name: DASHBOARD_SERVER_LNG
+              value: "17.1077"
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here

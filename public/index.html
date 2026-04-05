@@ -4,9 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Homelab Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body { background: #0f1117; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; }
+      .leaflet-container { background: #0f1117 !important; border-radius: 12px; }
+      .leaflet-control-attribution { background: rgba(15,17,23,0.8) !important; color: #475569 !important; font-size: 10px !important; }
+      .leaflet-control-attribution a { color: #64748b !important; }
     </style>
   </head>
   <body>
