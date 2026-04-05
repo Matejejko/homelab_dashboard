@@ -11,6 +11,7 @@ COPY src/    src/
 # API calls go to relative /api/ — nginx proxies them to the backend service
 ENV REACT_APP_API_URL=""
 
+ENV CI=false
 RUN npm run build
 
 # ── Stage 2: Serve with nginx ─────────────────────────────────────────────────

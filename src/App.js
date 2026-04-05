@@ -203,8 +203,7 @@ function WorldMap({ serverLoc, devices }) {
     mapInst.current = map;
     layerRef.current = L.layerGroup().addTo(map);
     return () => { map.remove(); mapInst.current = null; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // init once
 
   // Update markers when data changes
   useEffect(() => {
