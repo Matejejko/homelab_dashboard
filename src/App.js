@@ -530,7 +530,7 @@ export default function App() {
           next.networkConfig = { ...prev.networkConfig, lanIp: cfg.lan_ip, ztIp: prev.networkConfig.ztIp || cfg.zt_ip, tsIp: prev.networkConfig.tsIp || cfg.ts_ip };
           changed = true;
         }
-        if (!prev.serverLocation.lat && !prev.serverLocation.lng && (cfg.server_lat || cfg.server_lng)) {
+        if ((cfg.server_lat || cfg.server_lng) && (prev.serverLocation.lat !== cfg.server_lat || prev.serverLocation.lng !== cfg.server_lng)) {
           next.serverLocation = { lat: cfg.server_lat || 0, lng: cfg.server_lng || 0 };
           changed = true;
         }

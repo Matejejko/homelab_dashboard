@@ -467,7 +467,7 @@ async def get_services():
     return list(await asyncio.gather(*[check(s) for s in services]))
 
 
-# ─── Device detection via conntrack ──────────────────────────────────────────
+# ─── Device detection ────────────────────────────────────────────────────────
 
 _geo_cache: dict[str, dict] = {}   # ip → {lat, lng, city, country, ts}
 _GEO_TTL = 300  # 5 minutes
@@ -489,19 +489,38 @@ def _get_local_ips() -> set[str]:
     return ips
 
 
-def _parse_conntrack() -> dict[str, set[int]]:
-    """Parse /proc/net/nf_conntrack for ESTABLISHED inbound TCP connections.
-    Returns {client_ip: {dest_ports}} — only real external/Tailscale/ZT clients."""
-    ct_path = Path(HOST_PROC) / "net" / "nf_conntrack"
-    result: dict[str, set[int]] = {}
-
+def _is_client_ip(ip_str: str, local_ips: set[str]) -> bool:
+    """Return True if ip_str is a real external/VPN client, not internal."""
     try:
-        lines = ct_path.read_text().splitlines()
-    except OSError:
-        return result
+        ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if ip_obj.is_loopback or ip_obj.is_link_local:
+        return False
+    if any(ip_obj in cidr for cidr in _K3S_CIDRS):
+        return False
+    if ip_str in local_ips:
+        return False
+    return True
 
-    local_ips = _get_local_ips()
 
+def _parse_conntrack(local_ips: set[str]) -> dict[str, set[int]]:
+    """Parse nf_conntrack for ESTABLISHED inbound TCP connections.
+    Returns {client_ip: {dest_ports}}."""
+    # Try multiple paths — some systems vary
+    for ct_name in ("nf_conntrack", "ip_conntrack"):
+        ct_path = Path(HOST_PROC) / "net" / ct_name
+        try:
+            lines = ct_path.read_text().splitlines()
+            break
+        except OSError:
+            lines = []
+
+    if not lines:
+        logger.debug("conntrack not available at %s/net/nf_conntrack", HOST_PROC)
+        return {}
+
+    result: dict[str, set[int]] = {}
     for line in lines:
         if "ESTABLISHED" not in line or "tcp" not in line:
             continue
@@ -518,22 +537,7 @@ def _parse_conntrack() -> dict[str, set[int]]:
         dport = kv.get("dport", "")
         if not src or not dport:
             continue
-
-        try:
-            ip_obj = ipaddress.ip_address(src)
-        except ValueError:
-            continue
-
-        # Skip loopback, link-local
-        if ip_obj.is_loopback or ip_obj.is_link_local:
-            continue
-
-        # Skip k3s internal pod/service CIDRs
-        if any(ip_obj in cidr for cidr in _K3S_CIDRS):
-            continue
-
-        # Skip connections originating FROM this server (outbound)
-        if src in local_ips:
+        if not _is_client_ip(src, local_ips):
             continue
 
         port = int(dport)
@@ -541,19 +545,17 @@ def _parse_conntrack() -> dict[str, set[int]]:
             result[src] = set()
         result[src].add(port)
 
+    logger.debug("conntrack found %d client IPs", len(result))
     return result
 
 
-def _parse_proc_net_tcp() -> dict[str, set[int]]:
-    """Fallback: parse /proc/net/tcp for ESTABLISHED connections."""
-    tcp_path = Path(HOST_PROC) / "net" / "tcp"
+def _parse_tcp_file(tcp_path: Path, local_ips: set[str]) -> dict[str, set[int]]:
+    """Parse a /proc/*/net/tcp file. Returns {remote_ip: {local_ports}}."""
     result: dict[str, set[int]] = {}
     try:
         lines = tcp_path.read_text().splitlines()[1:]
     except OSError:
         return result
-
-    local_ips = _get_local_ips()
 
     for line in lines:
         parts = line.split()
@@ -567,7 +569,7 @@ def _parse_proc_net_tcp() -> dict[str, set[int]]:
         r_ip_int = struct.unpack("<I", bytes.fromhex(r_ip_hex))[0]
         r_ip = str(ipaddress.IPv4Address(r_ip_int))
 
-        if r_ip.startswith("127.") or r_ip == "0.0.0.0" or r_ip in local_ips:
+        if not _is_client_ip(r_ip, local_ips):
             continue
 
         if r_ip not in result:
@@ -577,12 +579,74 @@ def _parse_proc_net_tcp() -> dict[str, set[int]]:
     return result
 
 
+def _scan_all_net_namespaces(local_ips: set[str]) -> dict[str, set[int]]:
+    """Scan /proc/<pid>/net/tcp across all unique network namespaces.
+    Requires hostPID: true to see other pods' namespaces."""
+    proc_base = Path(HOST_PROC)
+    seen_ns: set[int] = set()
+    result: dict[str, set[int]] = {}
+
+    # Iterate over all PIDs
+    try:
+        pid_dirs = [d for d in proc_base.iterdir() if d.name.isdigit()]
+    except OSError:
+        return result
+
+    for pid_dir in pid_dirs:
+        # Deduplicate by network namespace inode
+        ns_path = pid_dir / "ns" / "net"
+        try:
+            ns_inode = ns_path.stat().st_ino
+        except OSError:
+            continue
+
+        if ns_inode in seen_ns:
+            continue
+        seen_ns.add(ns_inode)
+
+        # Parse this namespace's TCP table
+        tcp_path = pid_dir / "net" / "tcp"
+        ns_conns = _parse_tcp_file(tcp_path, local_ips)
+        for ip, ports in ns_conns.items():
+            if ip in result:
+                result[ip].update(ports)
+            else:
+                result[ip] = set(ports)
+
+    logger.debug("namespace scan: %d namespaces, %d client IPs", len(seen_ns), len(result))
+    return result
+
+
 def _detect_connections() -> dict[str, set[int]]:
-    """Try conntrack first (sees k3s NATted connections), fall back to /proc/net/tcp."""
-    conns = _parse_conntrack()
-    if conns:
-        return conns
-    return _parse_proc_net_tcp()
+    """Detect inbound client connections using best available method(s).
+
+    1. conntrack — sees all NATted connections (kube-proxy DNAT to pods)
+    2. namespace scan — reads /proc/<pid>/net/tcp for every unique net ns
+    3. host /proc/net/tcp — fallback
+
+    Results are merged so we catch as many real clients as possible.
+    """
+    local_ips = _get_local_ips()
+    result: dict[str, set[int]] = {}
+
+    # Method 1: conntrack (best — sees through kube-proxy NAT)
+    ct = _parse_conntrack(local_ips)
+    for ip, ports in ct.items():
+        result.setdefault(ip, set()).update(ports)
+
+    # Method 2: scan all network namespaces (catches pod-level connections)
+    ns = _scan_all_net_namespaces(local_ips)
+    for ip, ports in ns.items():
+        result.setdefault(ip, set()).update(ports)
+
+    # Method 3: host /proc/net/tcp (fallback if above found nothing)
+    if not result:
+        host_tcp = _parse_tcp_file(Path(HOST_PROC) / "net" / "tcp", local_ips)
+        for ip, ports in host_tcp.items():
+            result.setdefault(ip, set()).update(ports)
+
+    logger.debug("total detected: %d client IPs", len(result))
+    return result
 
 
 async def _geolocate_ips(ips: list[str]) -> dict[str, dict]:

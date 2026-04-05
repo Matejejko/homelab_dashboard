@@ -102,9 +102,9 @@ spec:
               value: ""
             # Server location for the world map (latitude, longitude)
             - name: DASHBOARD_SERVER_LAT
-              value: "49.058"
+              value: "48.946"
             - name: DASHBOARD_SERVER_LNG
-              value: "20.298"
+              value: "20.566"
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here
