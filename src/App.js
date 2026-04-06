@@ -657,17 +657,14 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [editingSvc, setEditingSvc] = useState(null);
   const [autoDevices, setAutoDevices] = useState([]);
+  const [groupedView, setGroupedView] = useState(false);
 
-  // Loading screen state
+  // Loading screen — fixed 2s then fade out
   const [loading, setLoading] = useState(true);
-  const [minTimePassed, setMinTimePassed] = useState(false);
   useEffect(() => {
-    const t = setTimeout(() => setMinTimePassed(true), 600);
+    const t = setTimeout(() => setLoading(false), 2000);
     return () => clearTimeout(t);
   }, []);
-  useEffect(() => {
-    if (system && minTimePassed) setLoading(false);
-  }, [system, minTimePassed]);
 
   // Layout
   const [layout, setLayout] = useState(() => {
@@ -829,7 +826,7 @@ export default function App() {
             <button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
-            <button className="hdr-btn" onClick={addGroup}>+ Group</button>
+            {groupedView && <button className="hdr-btn" onClick={addGroup}>+ Group</button>}
             <button className="hdr-btn" onClick={() => setShowSettings(true)}>Settings</button>
           </div>
         </div>
@@ -867,26 +864,46 @@ export default function App() {
 
         {svcErr && <div style={S.error}>Services API: {svcErr}</div>}
 
-        {/* ── Service Groups ─────────────────────────────────── */}
-        {Object.keys(grouped).length > 0 && (
-          <div style={{ ...S.cardLabel, marginBottom: '4px', marginTop: '8px' }}>
-            <span style={{ ...S.cardDot, background: 'var(--accent)' }} />
-            Services
+        {/* ── Services ───────────────────────────────────────── */}
+        {(services.length > 0 || Object.keys(grouped).length > 0) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', marginTop: '8px' }}>
+            <div style={{ ...S.cardLabel, marginBottom: 0 }}>
+              <span style={{ ...S.cardDot, background: 'var(--accent)' }} />
+              Services
+            </div>
+            <button className="hdr-btn" style={{ fontSize: '0.68rem', padding: '4px 10px' }}
+              onClick={() => setGroupedView(v => !v)}
+              title={groupedView ? 'Show all services together' : 'Show grouped by namespace'}
+            >{groupedView ? 'All' : 'Grouped'}</button>
           </div>
         )}
-        {Object.entries(grouped).map(([group, svcs]) => (
-          <GroupSection
-            key={group}
-            name={group}
-            services={svcs}
-            netCfg={layout.networkConfig}
-            overrides={layout.serviceOverrides}
-            onDrop={moveService}
-            onRename={renameGroup}
-            onDelete={deleteGroup}
-            onEditSvc={svc => setEditingSvc(svc)}
-          />
-        ))}
+
+        {!groupedView ? (
+          /* ── Flat view — all services in one grid ──── */
+          <div
+            className="group-dropzone"
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '10px', marginBottom: '24px' }}
+          >
+            {services.map(svc => (
+              <ServiceCard key={svc.name} svc={svc} netCfg={layout.networkConfig} overrides={layout.serviceOverrides} onEdit={svc => setEditingSvc(svc)} />
+            ))}
+          </div>
+        ) : (
+          /* ── Grouped view — by namespace ──── */
+          Object.entries(grouped).map(([group, svcs]) => (
+            <GroupSection
+              key={group}
+              name={group}
+              services={svcs}
+              netCfg={layout.networkConfig}
+              overrides={layout.serviceOverrides}
+              onDrop={moveService}
+              onRename={renameGroup}
+              onDelete={deleteGroup}
+              onEditSvc={svc => setEditingSvc(svc)}
+            />
+          ))
+        )}
 
         {/* ── Connected Devices & Map ────────────────────────── */}
         {(() => {
@@ -950,6 +967,18 @@ export default function App() {
             No services discovered yet. Services running in Docker or k3s will appear automatically.
           </div>
         )}
+
+        {/* ── Footer ─────────────────────────────────────────── */}
+        <footer style={{
+          marginTop: '48px', paddingTop: '20px', borderTop: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+          fontSize: '0.72rem', color: 'var(--text-muted)', paddingBottom: '8px',
+        }}>
+          Built by{' '}
+          <a href="https://github.com/Matejejko" target="_blank" rel="noopener noreferrer"
+            style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}
+          >Matejejko</a>
+        </footer>
       </div>
     </>
   );
