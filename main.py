@@ -106,6 +106,7 @@ KNOWN_IMAGES: dict[str, dict[str, str]] = {
     "node-red":       {"name": "Node-RED",       "icon": "🔴"},
     "nodered":        {"name": "Node-RED",       "icon": "🔴"},
     "nextcloud":      {"name": "Nextcloud",      "icon": "☁️"},
+    "opencloud":      {"name": "OpenCloud",      "icon": "☁️"},
     "vaultwarden":    {"name": "Vaultwarden",    "icon": "🔐"},
     "navidrome":      {"name": "Navidrome",      "icon": "🎵"},
     "immich":         {"name": "Immich",         "icon": "📷"},
@@ -175,6 +176,41 @@ def _services_from_k8s() -> list[dict] | None:
                         if hp.path and hp.path not in ("/", "/*"):
                             path = hp.path.rstrip("/*")
                         ingress_urls[f"{ing.metadata.namespace}/{svc_name}"] = f"{scheme}://{host}{path}"
+    except Exception:
+        pass
+
+    # Also scan Traefik IngressRoute CRDs (used by k3s default Traefik)
+    try:
+        from kubernetes import client as k8s_dyn
+        api = k8s_dyn.CustomObjectsApi()
+        for group in ("traefik.io", "traefik.containo.us"):
+            try:
+                routes = api.list_cluster_custom_object(
+                    group=group, version="v1alpha1",
+                    plural="ingressroutes", timeout_seconds=5,
+                )
+                for route in routes.get("items", []):
+                    ns = route["metadata"]["namespace"]
+                    spec = route.get("spec", {})
+                    has_tls = bool(spec.get("tls"))
+                    for r in spec.get("routes", []):
+                        for svc_ref in r.get("services", []):
+                            svc_name = svc_ref.get("name")
+                            if not svc_name:
+                                continue
+                            key = f"{ns}/{svc_name}"
+                            if key in ingress_urls:
+                                continue
+                            # Extract host from match rule e.g. Host(`example.com`)
+                            match = r.get("match", "")
+                            host = None
+                            if "Host(`" in match:
+                                host = match.split("Host(`")[1].split("`)")[0]
+                            if host:
+                                scheme = "https" if has_tls else "http"
+                                ingress_urls[key] = f"{scheme}://{host}"
+            except Exception:
+                continue
     except Exception:
         pass
 
