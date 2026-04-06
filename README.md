@@ -126,13 +126,13 @@ The backend reads the host's real mount table from `/host/proc/1/mounts` (PID 1 
 
 ## Service Auto-Discovery
 
-Services are discovered automatically from **three sources** — no manual config needed:
+Services are discovered automatically from **three sources** — no manual config needed. Each discovered service is health-checked (HTTP ping) and shown as online/offline with response time.
 
 ### 1. Kubernetes Services
 Every Service in the cluster is detected (except `kube-system` and the dashboard itself):
 - **NodePort** → `http://LAN_IP:<nodePort>`
 - **LoadBalancer** → external IP + port
-- **ClusterIP + Ingress** → Ingress URL
+- **ClusterIP + Ingress** → Ingress URL (supports both standard k8s Ingress and Traefik IngressRoute CRDs)
 - **ClusterIP without Ingress** → skipped (internal only)
 
 ### 2. Docker Containers
@@ -188,9 +188,9 @@ annotations:
 
 ## Group Management
 
-The dashboard has a drag-and-drop group management UI:
+Services default to a **flat view** (all cards in one grid). Click the **Grouped** button in the header to switch to grouped view, which enables drag-and-drop group management:
 
-1. Click **+ New Group** to create a custom group (e.g., "Game Servers", "Movies")
+1. Click **+ Group** to create a custom group (e.g., "Game Servers", "Movies")
 2. **Drag** any service card into a different group
 3. **Double-click** a group name to rename it
 4. Click **x** on a group header to delete it (services move to Uncategorized)
@@ -201,7 +201,7 @@ Group layout is saved to your browser's localStorage.
 
 ## World Map & Connected Devices
 
-The dashboard includes an interactive world map (Leaflet.js with CartoDB Dark tiles) displayed below the services section in a two-column layout: device list on the left, map on the right.
+The dashboard includes an interactive world map (Leaflet.js with CartoDB tiles — Dark Matter in dark mode, Voyager in light mode) displayed below the services section in a two-column layout: device list on the left, map on the right.
 
 ### Auto-detected devices
 
@@ -221,7 +221,7 @@ Devices are shown with colored pins and listed with connection details:
 - **LAN/Tailscale/ZeroTier devices** are pinned near the server (private IPs can't be geolocated)
 - Connection lines are drawn from each device to the server
 - The device list shows IP, location/type, connection count, and which services are being accessed
-- Devices are fetched every 10 seconds from `/api/devices`
+- **Polling intervals:** system stats every 5 s, services every 15 s, devices every 10 s
 
 ### conntrack setup
 
@@ -326,12 +326,14 @@ homelab_dashboard/
 ├── requirements.txt
 ├── package.json                     # Frontend React deps
 ├── src/App.js                       # Frontend UI (drag-drop, edit, settings)
+├── src/App.css                      # Frontend styles (theming, animations)
 ├── src/index.js                     # React entry point
 ├── public/index.html                # HTML template
 ├── nginx.conf                       # Frontend nginx proxy config
 ├── mnt/.../frontend/Dockerfile      # Frontend multi-stage build
 ├── deploy.sh                        # One-command build & deploy
 ├── services.json                    # Local dev fallback (empty)
+├── .gitignore
 ├── 00-namespace.yaml                # k8s Namespace
 ├── 01-configmap.yaml                # Manual service additions (empty)
 ├── 02-backend.yaml                  # Backend + RBAC + all config env vars
@@ -347,4 +349,5 @@ homelab_dashboard/
 - **Disk panel** reads from `/host/proc/1/mounts`. Filter with `DASHBOARD_DISKS` env var.
 - **Service URLs** use the configured `DASHBOARD_LAN_IP` instead of localhost.
 - **Multi-node clusters:** Pin the backend to a specific node with a `nodeSelector` in `02-backend.yaml`.
-- **Live clock** is displayed in the top-right corner of the dashboard.
+- **Live clock** is displayed in the top-right corner of the dashboard (date + time).
+- **Dark/Light theme** can be toggled via the sun/moon button in the header. Defaults to your OS preference; saved to localStorage.
