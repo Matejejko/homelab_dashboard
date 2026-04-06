@@ -192,7 +192,7 @@ def _services_from_k8s() -> list[dict] | None:
                 for route in routes.get("items", []):
                     ns = route["metadata"]["namespace"]
                     spec = route.get("spec", {})
-                    has_tls = bool(spec.get("tls"))
+                    has_tls = "tls" in spec
                     for r in spec.get("routes", []):
                         for svc_ref in r.get("services", []):
                             svc_name = svc_ref.get("name")
