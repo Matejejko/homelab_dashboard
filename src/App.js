@@ -350,7 +350,7 @@ function WorldMap({ serverLoc, devices, theme }) {
     mapInst.current = map;
     layerRef.current = L.layerGroup().addTo(map);
     return () => { map.remove(); mapInst.current = null; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update tile layer when theme changes
   useEffect(() => {
