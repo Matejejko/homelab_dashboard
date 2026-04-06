@@ -697,10 +697,11 @@ export default function App() {
       setLayout(prev => {
         let changed = false;
         const next = { ...prev };
-        if (!prev.networkConfig.lanIp && cfg.lan_ip) {
-          next.networkConfig = { ...prev.networkConfig, lanIp: cfg.lan_ip, ztIp: prev.networkConfig.ztIp || cfg.zt_ip, tsIp: prev.networkConfig.tsIp || cfg.ts_ip };
-          changed = true;
-        }
+        const nc = { ...prev.networkConfig };
+        if (!nc.lanIp && cfg.lan_ip) { nc.lanIp = cfg.lan_ip; changed = true; }
+        if (!nc.ztIp  && cfg.zt_ip)  { nc.ztIp  = cfg.zt_ip;  changed = true; }
+        if (!nc.tsIp  && cfg.ts_ip)  { nc.tsIp  = cfg.ts_ip;  changed = true; }
+        if (changed) next.networkConfig = nc;
         if ((cfg.server_lat || cfg.server_lng) && (prev.serverLocation.lat !== cfg.server_lat || prev.serverLocation.lng !== cfg.server_lng)) {
           next.serverLocation = { lat: cfg.server_lat || 0, lng: cfg.server_lng || 0 };
           changed = true;
