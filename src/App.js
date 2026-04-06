@@ -71,7 +71,6 @@ const S = {
     fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: '5px',
     transition: 'all 0.15s', fontFamily: 'var(--font)',
   },
-  btnHover: { background: 'var(--bg-hover)', borderColor: 'var(--border-hover)', color: 'var(--text-primary)' },
   btnPrimary: { background: 'var(--accent)', border: '1px solid var(--accent)', color: '#fff' },
 
   // Cards
@@ -663,7 +662,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [minTimePassed, setMinTimePassed] = useState(false);
   useEffect(() => {
-    const t = setTimeout(() => setMinTimePassed(true), 1200);
+    const t = setTimeout(() => setMinTimePassed(true), 600);
     return () => clearTimeout(t);
   }, []);
   useEffect(() => {
@@ -830,14 +829,8 @@ export default function App() {
             <button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
-            <button style={S.btn} onClick={addGroup}
-              onMouseEnter={e => Object.assign(e.target.style, S.btnHover)}
-              onMouseLeave={e => { e.target.style.background = 'var(--bg-surface)'; e.target.style.borderColor = 'var(--border)'; e.target.style.color = 'var(--text-secondary)'; }}
-            >+ Group</button>
-            <button style={S.btn} onClick={() => setShowSettings(true)}
-              onMouseEnter={e => Object.assign(e.target.style, S.btnHover)}
-              onMouseLeave={e => { e.target.style.background = 'var(--bg-surface)'; e.target.style.borderColor = 'var(--border)'; e.target.style.color = 'var(--text-secondary)'; }}
-            >Settings</button>
+            <button className="hdr-btn" onClick={addGroup}>+ Group</button>
+            <button className="hdr-btn" onClick={() => setShowSettings(true)}>Settings</button>
           </div>
         </div>
 
@@ -862,9 +855,11 @@ export default function App() {
         {!system && !sysErr && (
           <div style={S.grid}>
             {['CPU', 'Memory', 'Temperature', 'Uptime', 'Network'].map(t => (
-              <div key={t} className="stat-card" style={{ ...S.card, opacity: 0.5 }}>
+              <div key={t} className="stat-card" style={S.card}>
                 <div style={S.cardLabel}>{t}</div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Loading...</div>
+                <div className="skeleton" style={{ width: '60%', height: '28px', marginBottom: '10px' }} />
+                <div className="skeleton" style={{ width: '100%', height: '6px', borderRadius: '3px' }} />
+                <div className="skeleton" style={{ width: '45%', height: '12px', marginTop: '10px' }} />
               </div>
             ))}
           </div>
@@ -873,6 +868,12 @@ export default function App() {
         {svcErr && <div style={S.error}>Services API: {svcErr}</div>}
 
         {/* ── Service Groups ─────────────────────────────────── */}
+        {Object.keys(grouped).length > 0 && (
+          <div style={{ ...S.cardLabel, marginBottom: '4px', marginTop: '8px' }}>
+            <span style={{ ...S.cardDot, background: 'var(--accent)' }} />
+            Services
+          </div>
+        )}
         {Object.entries(grouped).map(([group, svcs]) => (
           <GroupSection
             key={group}
