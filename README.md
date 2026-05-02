@@ -1,319 +1,283 @@
-# Homelab Dashboard — k3s Setup Guide
+# Homelab Dashboard
 
-Runs as two pods in a `homelab` namespace. The backend reads real host hardware metrics via mounted `/proc` and `/sys`, and auto-discovers services from k8s Services, Docker containers, and an optional ConfigMap.
+A self-hosted dashboard for a single-node **k3s** homelab. It surfaces real host hardware metrics, auto-discovers your services from Kubernetes and Docker, health-checks them, and shows who is currently connected to the box on a world map.
+
+Two pods, one namespace (`homelab`), one command to deploy.
 
 ```
-Browser → NodePort :30300 → frontend (nginx)
-                                ├── /          → React static files
-                                └── /api/*     → backend pod :8000
-                                                    ├── /api/system    (psutil → host /proc /sys)
-                                                    ├── /api/services  (k8s + Docker auto-discovery)
-                                                    ├── /api/config    (network IPs for LAN/ZT/TS)
-                                                    └── /api/devices   (conntrack → connected clients)
+Browser → NodePort :30300 → frontend (nginx + React)
+                                ├── /          → React SPA (static files)
+                                └── /api/*     → backend pod :8000 (FastAPI)
+                                                    ├── /api/system    psutil reads host /proc /sys
+                                                    ├── /api/services  k8s + Docker auto-discovery + health
+                                                    ├── /api/config    LAN / ZeroTier / Tailscale IPs
+                                                    └── /api/devices   conntrack → connected clients
 ```
+
+---
+
+## Features
+
+- **Host metrics** — CPU %, frequency, cores/threads, load average, RAM, disk usage per real filesystem, temperature, uptime, network throughput. Read directly from the host's `/proc` and `/sys` (the backend bypasses the container's mount namespace by reading `/proc/1/mounts`).
+- **Service auto-discovery** — Three sources merged automatically:
+  - Kubernetes Services (NodePort, LoadBalancer, ClusterIP behind an Ingress, plus Traefik `IngressRoute` CRDs)
+  - Docker containers with published host ports (via `/var/run/docker.sock`)
+  - Optional ConfigMap entries for things that don't fit either
+- **Health checks** — Each discovered service is HTTP-pinged; the card shows online/offline + response time.
+- **Connected devices** — Backend reads the kernel's `conntrack` table to see real client IPs through k3s NAT, classifies them as LAN / Tailscale / ZeroTier / WAN, and (for WAN) geolocates them via ip-api.com.
+- **World map** — Leaflet (CartoDB Voyager / Dark Matter) with pins for every connected device.
+- **Multi-network URLs** — Each service card has LAN / Tailscale / ZeroTier buttons; URLs are rebuilt from whichever IPs you've configured.
+- **Customizable UI** — Drag-and-drop service groups, per-card name/icon/description overrides (browser localStorage), or set them at the source via Docker labels and k8s annotations.
+- **Theming** — Auto-follows OS dark/light preference, can be toggled in the header.
+
+---
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| Backend | Python 3.12, FastAPI, uvicorn, psutil, httpx, kubernetes client |
+| Frontend | React 18, plain CSS variables (no Tailwind/MUI), Leaflet.js |
+| Container runtime | Docker (build), k3s containerd (runtime) |
+| Orchestration | k3s (single-node), Traefik Ingress (optional) |
+| Reverse proxy | nginx inside the frontend pod (`/api/*` → backend Service) |
 
 ---
 
 ## Prerequisites
 
+Run on the same Linux host that runs k3s:
+
 ```bash
 # k3s
 curl -sfL https://get.k3s.io | sh -
 
-# Docker (needed to build images)
+# Docker (needed to build the images)
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER   # then log out and back in
 ```
 
+The deploy script also assumes `kubectl` is on `PATH` (k3s installs it at `/usr/local/bin/kubectl`).
+
 ---
 
-## Step-by-Step Deploy
+## Quick Start
 
-### 1 — Clone the repo
+### 1. Clone
 
 ```bash
 git clone https://github.com/Matejejko/homelab_dashboard.git
 cd homelab_dashboard
 ```
 
-### 2 — (Optional) Pre-configure disk filter
+### 2. (Optional) Pre-configure the disk filter
 
-Edit `02-backend.yaml` if you need to filter which disks are shown (see "Disk Monitoring" below):
+`02-backend.yaml` shows all real block-device filesystems by default. To restrict the disk panel to specific mounts:
 
 ```yaml
-  - name: DASHBOARD_DISKS
-    value: ""   # empty = show all, or e.g. "/, /home"
+- name: DASHBOARD_DISKS
+  value: "/, /home"   # comma-separated mount points or device names
 ```
 
-All other settings (IPs, location, timeout) are configured interactively by the deploy script.
+Everything else (LAN/ZT/TS IPs, server location, conntrack timeout) is filled in interactively by the deploy script.
 
-### 3 — Run the deploy script
+### 3. Run the deploy script
 
 ```bash
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-The script auto-detects your setup and prompts for confirmation:
+The script walks you through:
 
-1. **Server location** — detects your city from public IP via ip-api.com. Accept, enter manually, or keep current.
-2. **LAN IP** — detects from `hostname -I`. Accept, change, or keep current.
-3. **Tailscale IP** — detects via `tailscale ip` or the `tailscale0` interface. Accept, enter manually, or disable.
-4. **ZeroTier IP** — detects via `zerotier-cli` or `zt*` interfaces. Accept, enter manually, or disable.
-5. **Device detection timeout** — how long (in minutes) a disconnected device stays visible. E.g. `5` for 5 min, `90` for 1.5 hours.
+1. **Server location** — geolocates your public IP via ip-api.com (used to pin the server on the map). Accept the auto-detected city, enter coordinates manually, or keep current.
+2. **LAN IP** — auto-detected from `hostname -I`.
+3. **Tailscale IP** — auto-detected via `tailscale ip` or the `tailscale0` interface; can be left blank.
+4. **ZeroTier IP** — auto-detected via `zerotier-cli` or `zt*` interfaces; can be left blank.
+5. **Device-detection timeout** — how long a disconnected client stays visible. Sets `net.netfilter.nf_conntrack_tcp_timeout_established`, loads the `nf_conntrack` module if needed, and persists both across reboots.
 
-All values are written to `02-backend.yaml` and applied automatically. Then it builds, imports, and deploys.
+It then:
 
-### 4 — Open the dashboard
+1. Builds `homelab-backend:latest` and `homelab-frontend:latest` with Docker.
+2. Imports both into k3s containerd (`k3s ctr images import`) — no registry needed.
+3. Applies `00-namespace.yaml` → `03-frontend.yaml`.
+4. Restarts both Deployments and waits for rollout.
+
+### 4. Open the dashboard
 
 ```
 http://YOUR-SERVER-IP:30300
 ```
 
+To redeploy after a code or config change, just run `./deploy.sh` again.
+
 ---
 
 ## Configuration Reference
 
-All configuration is done via environment variables in `02-backend.yaml`.
+All backend config is environment variables in `02-backend.yaml`:
 
 | Env Var | Default | Description |
-|---------|---------|-------------|
-| `DASHBOARD_LAN_IP` | auto-detect | Your server's LAN IP for service URLs |
-| `DASHBOARD_ZT_IP` | *(empty)* | ZeroTier IP — leave empty to disable ZT button |
-| `DASHBOARD_TS_IP` | *(empty)* | Tailscale IP — leave empty to disable TS button |
-| `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names to monitor |
+|---|---|---|
+| `DASHBOARD_LAN_IP` | auto-detect (UDP probe to 8.8.8.8) | LAN IP used to build service URLs |
+| `DASHBOARD_ZT_IP` | *(empty)* | ZeroTier IP — empty greys out the ZT button |
+| `DASHBOARD_TS_IP` | *(empty)* | Tailscale IP — empty greys out the TS button |
+| `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names; empty = show all |
 | `DASHBOARD_SERVER_LAT` | `0` | Server latitude for the world map |
 | `DASHBOARD_SERVER_LNG` | `0` | Server longitude for the world map |
+| `HOST_PROC` / `HOST_SYS` / `HOST_ROOT` | `/host/proc` / `/host/sys` / `/host/root` | Where the host filesystems are mounted in the pod |
+| `SERVICES_FILE` | `/config/services.json` | Path to the manual-services JSON (mounted from ConfigMap) |
 
-You can also override LAN/ZT/TS IPs from the dashboard UI via **Settings** (saved to browser localStorage).
-
-After changing env vars, redeploy:
-```bash
-./deploy.sh
-```
-
----
-
-## Disk Monitoring
-
-By default, the dashboard shows **all real block-device filesystems** detected on the host (ext4, xfs, btrfs, etc.). Container overlays, tmpfs, and virtual filesystems are filtered out.
-
-### Filtering to specific disks
-
-Set `DASHBOARD_DISKS` in `02-backend.yaml` to show only the disks you care about:
-
-```yaml
-# Show only root and /home:
-- name: DASHBOARD_DISKS
-  value: "/, /home"
-
-# Show by device name:
-- name: DASHBOARD_DISKS
-  value: "/dev/sda1, /dev/nvme0n1p2"
-
-# Show all (default — leave empty):
-- name: DASHBOARD_DISKS
-  value: ""
-```
-
-The filter matches against **mount point** (e.g. `/`, `/home`, `/data`) or **device name** (e.g. `/dev/sda1`). Comma-separated, spaces are trimmed.
-
-### How it works
-
-The backend reads the host's real mount table from `/host/proc/1/mounts` (PID 1 = host init process), bypassing the container's mount namespace. Disk usage is probed through the host root mount at `/host/root`.
+LAN / ZT / TS IPs can also be overridden per-browser via the in-app **Settings** modal (saved to localStorage).
 
 ---
 
 ## Service Auto-Discovery
 
-Services are discovered automatically from **three sources** — no manual config needed. Each discovered service is health-checked (HTTP ping) and shown as online/offline with response time.
+The backend merges services from three sources on every `/api/services` poll:
 
 ### 1. Kubernetes Services
-Every Service in the cluster is detected (except `kube-system` and the dashboard itself):
-- **NodePort** → `http://LAN_IP:<nodePort>`
-- **LoadBalancer** → external IP + port
-- **ClusterIP + Ingress** → Ingress URL (supports both standard k8s Ingress and Traefik IngressRoute CRDs)
+
+Every Service in the cluster is considered, except those in `kube-system` / `kube-public` / `kube-node-lease` and the dashboard's own pods. Each is mapped to a URL:
+
+- **NodePort** → `http://localhost:<nodePort>` (the frontend rewrites this against `LAN_IP` for display)
+- **LoadBalancer** → external IP/hostname + port
+- **ClusterIP + Ingress** → URL from the Ingress (standard `networking.k8s.io/v1` plus Traefik `IngressRoute` CRDs in groups `traefik.io` and `traefik.containo.us`)
 - **ClusterIP without Ingress** → skipped (internal only)
 
 ### 2. Docker Containers
-Any running Docker container with a published host port is detected via `/var/run/docker.sock`. Service names and icons are matched from the Docker image name (e.g., `linuxserver/jellyfin` is identified as "Jellyfin").
 
-### 3. ConfigMap (manual additions)
-For services that can't be auto-detected:
+Any running container with a published host port is detected via `/var/run/docker.sock`. Friendly names and icons come from a built-in keyword table that matches against the image name (Jellyfin, Sonarr, Pi-hole, Nextcloud, Home Assistant, etc. — see `KNOWN_IMAGES` in `main.py`).
+
+### 3. ConfigMap (manual)
+
+For services the backend can't see (running on a different host, bare-metal, etc.):
 
 ```bash
 sudo kubectl edit configmap homelab-services -n homelab
 ```
 
----
+Change takes effect on the next service poll — no pod restart needed.
 
-## Editing Services in the Dashboard
+### Customizing services at the source
 
-Click the **pencil icon** on any service card to edit:
+Skip the per-browser overrides and label things directly in your infrastructure.
 
-- **Display name** — override the auto-detected name
-- **Icon** — set a custom emoji
-- **Description** — add or change the description
-- **Service info** — read-only panel showing the original name, port, URL, and auto-detected group
-
-Click **Reset to Default** to remove all overrides for that service.
-
-All customizations are saved to your browser's localStorage.
-
-### Customizing via Docker labels / k8s annotations
-
-You can also customize services at the infrastructure level:
-
-**Docker containers** — add labels to your docker-compose:
+**Docker (compose label):**
 ```yaml
 labels:
   homelab-dashboard.name: "Jellyfin"
   homelab-dashboard.icon: "📺"
   homelab-dashboard.desc: "Media server"
   homelab-dashboard.group: "Media"
-  homelab-dashboard.enabled: "false"   # hide this container
+  homelab-dashboard.url: "http://media.lan:8096"   # optional override
+  homelab-dashboard.enabled: "false"               # hide from dashboard
 ```
 
-**k8s Services** — add annotations:
+**Kubernetes (Service annotation):**
 ```yaml
 annotations:
   homelab-dashboard/name: "Jellyfin"
   homelab-dashboard/icon: "📺"
   homelab-dashboard/desc: "Media server"
   homelab-dashboard/group: "Media"
-  homelab-dashboard/enabled: "false"   # hide this service
+  homelab-dashboard/url: "https://jellyfin.example.com"
+  homelab-dashboard/enabled: "false"
 ```
 
 ---
 
-## Group Management
+## Editing Services in the UI
 
-Services default to a **flat view** (all cards in one grid). Click the **Grouped** button in the header to switch to grouped view, which enables drag-and-drop group management:
-
-1. Click **+ Group** to create a custom group (e.g., "Game Servers", "Movies")
-2. **Drag** any service card into a different group
-3. **Double-click** a group name to rename it
-4. Click **x** on a group header to delete it (services move to Uncategorized)
-
-Group layout is saved to your browser's localStorage.
+- **Pencil icon** on a card → override name, icon, description (saved to localStorage; "Reset to Default" removes overrides).
+- **Grouped view** (header toggle) → drag-and-drop cards between groups, double-click to rename a group, **+ Group** to create one.
+- The flat view is the default; switch to grouped only when you actually want to organize.
 
 ---
 
 ## World Map & Connected Devices
 
-The dashboard includes an interactive world map (Leaflet.js with CartoDB tiles — Dark Matter in dark mode, Voyager in light mode) displayed below the services section in a two-column layout: device list on the left, map on the right.
+Below the services section the dashboard renders a Leaflet map alongside a list of currently connected clients.
 
-### Auto-detected devices
+The backend runs `conntrack -L -p tcp --state ESTABLISHED` (the CLI is installed in the image) and parses the result. Falls back to `/proc/net/nf_conntrack` if the CLI isn't usable — both are reachable thanks to `privileged: true` and `hostNetwork: true`. Pod-to-pod (10.42.0.0/16) and ClusterIP (10.43.0.0/16) traffic is filtered out so only real clients show up.
 
-The backend scans the kernel's **conntrack** table (`conntrack -L`) to detect clients actively connected to your services. This sees through kube-proxy's NAT, so it works with k3s NodePort services, Tailscale tunnels, etc.
+| Type | Pin colour | How detected |
+|---|---|---|
+| LAN | Blue | RFC1918 private IP |
+| Tailscale | Purple | CGNAT range `100.64.0.0/10` |
+| ZeroTier | Orange | `10.147.0.0/16` (default ZT range) |
+| WAN | Orange | Public IP — geolocated via ip-api.com batch endpoint |
+| Server | Green | Your configured `DASHBOARD_SERVER_LAT/LNG` |
 
-Devices are shown with colored pins and listed with connection details:
+Geolocation results are cached in-process for 5 minutes. WAN devices are pinned at their geo-coordinates; LAN/TS/ZT devices appear near the server (private IPs can't be located). The device list shows IP, type, total connections, and which of your services they're hitting (matched by destination port).
 
-| Type | Color | How detected |
-|------|-------|-------------|
-| **LAN** | Blue | Private IPs (192.168.x.x, etc.) |
-| **Tailscale** | Purple | CGNAT range (100.64.0.0/10) |
-| **ZeroTier** | Orange | ZeroTier range (10.147.0.0/16) |
-| **WAN** | Orange | Public IPs — geolocated via ip-api.com |
-| **Server** | Green | Your server location |
+Polling: system every 5s, services every 15s, devices every 10s.
 
-- **WAN devices** are pinned at their geolocated position on the map
-- **LAN/Tailscale/ZeroTier devices** are pinned near the server (private IPs can't be geolocated)
-- Connection lines are drawn from each device to the server
-- The device list shows IP, location/type, connection count, and which services are being accessed
-- **Polling intervals:** system stats every 5 s, services every 15 s, devices every 10 s
+You can also add **manual devices** via Settings → Connected Devices (lat, lng, type) — useful for pinning known machines that aren't actively connected.
 
-### conntrack setup
+### Adjusting the timeout later
 
-The backend Docker image includes the `conntrack` CLI tool. For it to work properly:
-
-The `deploy.sh` script handles this automatically — it prompts for the device timeout in minutes, loads the conntrack module, sets the sysctl, and persists both across reboots.
-
-To change the timeout later without redeploying, run manually:
+The deploy script handles this, but to change it without redeploying:
 
 ```bash
-# Set to 5 minutes (300 seconds):
-sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300
+sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300   # 5 min
 ```
-
-### Manual devices
-
-You can also add devices manually via the Settings modal:
-
-1. Open **Settings** in the dashboard
-2. Scroll to **Connected Devices**
-3. Enter device name, latitude, longitude, and connection type
-4. Click **+** to add, then **Save**
-
-To find coordinates: search your city on Google Maps, right-click the pin, and copy the lat/lng.
-
-Manual devices are stored in your browser's localStorage. The map appears when a server location or at least one device is configured.
 
 ---
 
-## Multi-Network Access (LAN / ZeroTier / Tailscale)
+## Multi-Network Access
 
-Each service card shows three access buttons:
+Each service card shows three buttons (LAN / ZeroTier / Tailscale). Buttons are always rendered; ones whose IP you haven't configured are greyed out with a tooltip pointing to Settings.
 
-| Button | Color | When active | URL format |
-|--------|-------|-------------|------------|
-| **LAN** | Blue | LAN IP is set | `http://<LAN_IP>:<port>` |
-| **ZeroTier** | Orange | ZT IP is set | `http://<ZT_IP>:<port>` |
-| **Tailscale** | Purple | TS IP is set | `http://<TS_IP>:<port>` |
+| Button | When active | URL pattern |
+|---|---|---|
+| LAN | `DASHBOARD_LAN_IP` set | `http://<LAN_IP>:<port>` |
+| ZeroTier | `DASHBOARD_ZT_IP` set | `http://<ZT_IP>:<port>` |
+| Tailscale | `DASHBOARD_TS_IP` set | `http://<TS_IP>:<port>` |
 
-Buttons are always visible. If the corresponding IP is not configured, the button appears grayed out with a tooltip prompting you to set the IP in Settings.
-
-Configure IPs:
-1. **`02-backend.yaml`** → env vars (server-side defaults)
-2. **Dashboard Settings button** → browser-side overrides (localStorage)
-
-A **Network IPs** card in the system stats section shows all configured IPs at a glance.
-
----
-
-## Updating Code
-
-```bash
-./deploy.sh
-```
+Server-side defaults live in `02-backend.yaml`; per-browser overrides live in localStorage (Settings modal).
 
 ---
 
 ## Optional: Traefik Ingress (port 80)
 
+k3s ships with Traefik, so you can drop the `:30300` port:
+
 ```bash
 sudo kubectl apply -f 04-ingress.yaml
 ```
 
-Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
+By default it matches any host on port 80. To use a hostname, edit the `host:` field in `04-ingress.yaml` and add an entry to your local DNS / `/etc/hosts`.
+
+---
+
+## Why the Backend Needs So Much Privilege
+
+| Setting | Why |
+|---|---|
+| `hostNetwork: true` | psutil reads real host network interfaces for I/O stats; conntrack sees the host's tracking table |
+| `hostPID: true` | `/proc/1/mounts` resolves to the host init process, giving real host filesystems |
+| `/proc` → `/host/proc` | Real CPU, RAM, uptime, network counters |
+| `/sys` → `/host/sys` | CPU temperature sensors (`hwmon`, `thermal_zone*`) |
+| `/` → `/host/root` | Real disk usage via `psutil.disk_usage` |
+| `/var/run/docker.sock` mounted | Container auto-discovery |
+| `privileged: true` | Required to read host `/proc` & `/sys` and to run `conntrack` |
+
+This is why the dashboard is intended for a private homelab, not a multi-tenant cluster.
 
 ---
 
 ## Useful Commands
 
 | What | Command |
-|------|---------|
-| Check pod status | `sudo kubectl get pods -n homelab` |
+|---|---|
+| Pod status | `sudo kubectl get pods -n homelab` |
 | Backend logs | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
 | Frontend logs | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
-| View k8s services | `sudo kubectl get svc -A` |
-| View Docker containers | `docker ps` |
-| Delete everything | `sudo kubectl delete namespace homelab` |
-
----
-
-## How Host Metrics Work
-
-| Setting | Why |
-|---------|-----|
-| `hostNetwork: true` | Sees host network interfaces for real I/O stats |
-| `hostPID: true` | Sees host processes; `/proc/1/mounts` gives real host filesystems |
-| `/proc` → `/host/proc` | Real host CPU, RAM, uptime |
-| `/sys` → `/host/sys` | CPU temperature sensors |
-| `/` → `/host/root` | Real disk usage |
-| `docker.sock` mounted | Discovers running Docker containers |
-| `privileged: true` | Required to access all of the above + run `conntrack` |
-| `conntrack` CLI | Reads kernel connection tracking to detect connected clients |
+| All k8s services | `sudo kubectl get svc -A` |
+| Edit manual services | `sudo kubectl edit configmap homelab-services -n homelab` |
+| Running containers | `docker ps` |
+| Tear everything down | `sudo kubectl delete namespace homelab` |
 
 ---
 
@@ -321,33 +285,33 @@ Then visit `http://YOUR-SERVER-IP` instead of `:30300`.
 
 ```
 homelab_dashboard/
-├── main.py                          # Backend API (FastAPI + psutil)
-├── Dockerfile                       # Backend image
-├── requirements.txt
-├── package.json                     # Frontend React deps
-├── src/App.js                       # Frontend UI (drag-drop, edit, settings)
-├── src/App.css                      # Frontend styles (theming, animations)
-├── src/index.js                     # React entry point
-├── public/index.html                # HTML template
-├── nginx.conf                       # Frontend nginx proxy config
-├── mnt/.../frontend/Dockerfile      # Frontend multi-stage build
-├── deploy.sh                        # One-command build & deploy
-├── services.json                    # Local dev fallback (empty)
-├── .gitignore
-├── 00-namespace.yaml                # k8s Namespace
-├── 01-configmap.yaml                # Manual service additions (empty)
-├── 02-backend.yaml                  # Backend + RBAC + all config env vars
-├── 03-frontend.yaml                 # Frontend + NodePort :30300
-└── 04-ingress.yaml                  # Optional Traefik Ingress (port 80)
+├── main.py                                      # Backend API (FastAPI + psutil)
+├── Dockerfile                                   # Backend image (python:3.12-slim + conntrack)
+├── requirements.txt                             # fastapi, uvicorn, psutil, httpx, kubernetes
+├── package.json                                 # Frontend React deps
+├── src/App.js                                   # Frontend UI (cards, drag-drop, settings, map)
+├── src/App.css                                  # Theming + animations
+├── src/index.js                                 # React entry point
+├── public/index.html                            # HTML template
+├── nginx.conf                                   # Frontend nginx (serves SPA + proxies /api/*)
+├── mnt/user-data/outputs/homelab-k3s/frontend/
+│   └── Dockerfile                               # Frontend multi-stage build (node → nginx)
+├── deploy.sh                                    # Interactive build + import + apply + rollout
+├── services.json                                # Local-dev fallback for manual services
+├── 00-namespace.yaml                            # `homelab` Namespace
+├── 01-configmap.yaml                            # Manual services (mounted at /config)
+├── 02-backend.yaml                              # ServiceAccount + ClusterRole + Deployment + Service + env vars
+├── 03-frontend.yaml                             # Frontend Deployment + NodePort :30300
+└── 04-ingress.yaml                              # Optional Traefik Ingress on port 80
 ```
 
 ---
 
-## Notes
+## Notes & Gotchas
 
-- **Temperature** shows "Not available" if `lm-sensors` is not installed on the host.
-- **Disk panel** reads from `/host/proc/1/mounts`. Filter with `DASHBOARD_DISKS` env var.
-- **Service URLs** use the configured `DASHBOARD_LAN_IP` instead of localhost.
-- **Multi-node clusters:** Pin the backend to a specific node with a `nodeSelector` in `02-backend.yaml`.
-- **Live clock** is displayed in the top-right corner of the dashboard (date + time).
-- **Dark/Light theme** can be toggled via the sun/moon button in the header. Defaults to your OS preference; saved to localStorage.
+- **Temperature** shows "Not available" when the host has no readable sensor (no `lm-sensors`, no `thermal_zone*`).
+- **Disk panel** reads `/host/proc/1/mounts` to bypass the container mount namespace; without `hostPID: true` you'd see the container's view instead of the host's.
+- **Multi-node clusters** — the backend must run on the node whose hardware you care about. Add a `nodeSelector` or `nodeName` in `02-backend.yaml`.
+- **Frontend image rebuild** — the build context is the repo root, so any change under `src/` or `public/` requires a redeploy.
+- **localStorage** is the source of truth for per-browser customizations (theme, group layout, service overrides, manual devices, IP overrides). Clearing it returns the dashboard to its server-side defaults.
+- **Rolling update strategy** for the backend is `Recreate` — `hostNetwork: true` means two pods would otherwise fight over port 8000.
