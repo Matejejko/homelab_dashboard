@@ -3,3 +3,5 @@ node_modules/
 dist/
 __pycache__/
 .pytest_cache/
+# local backend state (account file, one-time password): never commit
+backend/data/

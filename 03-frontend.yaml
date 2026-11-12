@@ -23,6 +23,19 @@ spec:
           ports:
             - containerPort: 3000
 
+          # The image is nginx-unprivileged (uid 101). It needs no root, no
+          # capabilities and no writable filesystem beyond /tmp (pid, temp files).
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
           resources:
             requests:
               cpu: "20m"
@@ -37,6 +50,10 @@ spec:
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
 
 ---
 apiVersion: v1

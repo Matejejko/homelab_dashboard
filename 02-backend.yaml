@@ -89,16 +89,19 @@ spec:
             # services.json is mounted from the ConfigMap
             - name: SERVICES_FILE
               value: /config/services.json
-            # Network IPs — frontend builds access URLs from these.
-            # Change these to match your network setup.
-            - name: DASHBOARD_LAN_IP
-              value: "192.168.0.101"
-            # Set your ZeroTier IP (leave empty to hide ZT button)
-            - name: DASHBOARD_ZT_IP
-              value: ""
-            # Set your Tailscale IP (leave empty to hide TS button)
-            - name: DASHBOARD_TS_IP
-              value: ""
+            # Network interfaces — the backend reads each one's IPv4 address
+            # live (what `ip a` shows on the host) and the frontend builds
+            # access URLs from them. Change the names to match this host.
+            # A missing interface is reported as an empty address.
+            - name: DASHBOARD_LAN_IFACE
+              value: "enp7s0"
+            - name: DASHBOARD_TS_IFACE
+              value: "tailscale0"
+            - name: DASHBOARD_ZT_IFACE
+              value: "ztsjsl3deb"
+            # Where auth.json and the one-time initial password are kept
+            - name: DASHBOARD_DATA_DIR
+              value: /data
             # Disk filter — comma-separated mount points or device names.
             # Empty = show all real block devices. Example: "/, /home, /data"
             - name: DASHBOARD_DISKS
@@ -129,6 +132,9 @@ spec:
             # Docker socket — for container auto-discovery
             - name: docker-sock
               mountPath: /var/run/docker.sock
+            # Login state (auth.json), kept on the host across pod restarts
+            - name: data
+              mountPath: /data
 
           securityContext:
             # Required to read host /proc and /sys
@@ -140,7 +146,7 @@ spec:
               memory: "64Mi"
             limits:
               cpu: "200m"
-              memory: "128Mi"
+              memory: "256Mi"
 
           readinessProbe:
             httpGet:
@@ -173,6 +179,10 @@ spec:
         - name: services-config
           configMap:
             name: homelab-services
+        - name: data
+          hostPath:
+            path: /var/lib/homelab-dashboard
+            type: DirectoryOrCreate
 
 ---
 apiVersion: v1
