@@ -275,6 +275,15 @@ Direction is shown by the line, never by colour alone: dots moving toward the se
 
 Nothing is ever placed at an invented position.
 
+### Map tiles need a CARTO API key
+
+The basemap comes from CARTO (`dark_all` and `light_all`). **Since 25 September 2026 CARTO no longer serves these tiles without an API key**: a request without one gets a blank tile reading "API KEY REQUIRED" instead of the map. This version sends no key, so until key support is added the map background shows that notice. Markers, lines, popups and the peer list do not depend on the tiles and work regardless.
+
+A key is free for personal use (request it at <https://carto.com/basemaps/apikey>) and is added to tile URLs as `?key=...`. Two things to know before wiring one in:
+
+- A key with **website restrictions** is checked against the `Referer` header. This dashboard sends `Referrer-Policy: no-referrer`, so a restricted key would be refused. Use an unrestricted key, or relax that header in `frontend/nginx.conf`.
+- CARTO's terms require the attribution and its notices to stay visible. Do not hide the notice with CSS.
+
 ### Accuracy
 
 **Locations are IP-geolocation estimates: city-level at best. Mobile and VPN users appear at their carrier or VPN exit.** A marker shows roughly where an address is registered, not where a person is.
@@ -413,6 +422,7 @@ homelab_dashboard/
 
 ## Notes & Gotchas
 
+- **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a key, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
 - **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
 - **Temperature** shows "n/a" when the host has no readable sensor.
 - **Self-signed HTTPS services** are reported offline: the health check verifies certificates.
