@@ -1,0 +1,111 @@
+/* Fonts, colour tokens and scales. Themes switch on <html data-theme>. */
+
+@font-face {
+  font-family: 'JetBrainsMono Nerd Font';
+  src: url('../assets/fonts/JetBrainsMonoNerdFont-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrainsMono Nerd Font';
+  src: url('../assets/fonts/JetBrainsMonoNerdFont-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font: 'JetBrainsMono Nerd Font', ui-monospace, monospace;
+
+  /* 12 px is the floor for any text */
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.25rem;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+
+  /* Dark (default) */
+  color-scheme: dark;
+  --bg: #0a0d12;
+  --surface: #10141b;
+  --surface-2: #171c26;
+  --border: #252c38;
+  --border-strong: #3a4454;
+  --text: #e7eaf0;
+  --text-2: #b3bccb;
+  --text-3: #8f9aac;
+  --accent: #7ee787;
+  --accent-ink: #06210f;
+  --ok: #56d364;
+  --warn: #e3b341;
+  --bad: #ff7b72;
+  --net-lan: #58a6ff;
+  --net-tailscale: #d2a8ff;
+  --net-zerotier: #ffa657;
+  --net-wan: #ff7b9c;
+  --pin-ring: #0a0d12;
+  --overlay: rgb(2 4 8 / 0.72);
+  --shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --surface-2: #e9edf2;
+  --border: #d5dae1;
+  --border-strong: #aab3bf;
+  --text: #151a22;
+  --text-2: #3d4756;
+  --text-3: #566172;
+  --accent: #116329;
+  --accent-ink: #ffffff;
+  --ok: #116329;
+  --warn: #8a5a00;
+  --bad: #c21f2b;
+  --net-lan: #0550ae;
+  --net-tailscale: #7c3aed;
+  --net-zerotier: #b34700;
+  --net-wan: #b4266f;
+  --pin-ring: #ffffff;
+  --overlay: rgb(20 26 34 / 0.45);
+  --shadow: 0 8px 28px rgb(20 26 34 / 0.18);
+}
+
+/* Before the script has set data-theme, follow the OS so nothing flashes. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #e9edf2;
+    --border: #d5dae1;
+    --border-strong: #aab3bf;
+    --text: #151a22;
+    --text-2: #3d4756;
+    --text-3: #566172;
+    --accent: #116329;
+    --accent-ink: #ffffff;
+    --ok: #116329;
+    --warn: #8a5a00;
+    --bad: #c21f2b;
+    --net-lan: #0550ae;
+    --net-tailscale: #7c3aed;
+    --net-zerotier: #b34700;
+    --net-wan: #b4266f;
+    --pin-ring: #ffffff;
+    --overlay: rgb(20 26 34 / 0.45);
+    --shadow: 0 8px 28px rgb(20 26 34 / 0.18);
+  }
+}
+
+/* One custom property per network type, shared by badges, pills, pins and lines. */
+.net--lan, .pin--lan, .pill--lan { --net: var(--net-lan); }
+.net--tailscale, .pin--tailscale, .pill--tailscale { --net: var(--net-tailscale); }
+.net--zerotier, .pin--zerotier, .pill--zerotier { --net: var(--net-zerotier); }
+.net--wan, .pin--wan, .pill--wan { --net: var(--net-wan); }
