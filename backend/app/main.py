@@ -10,6 +10,8 @@ import logging
 import time
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from . import auth, network, services, system
@@ -27,6 +29,11 @@ def create_app() -> FastAPI:
     app.state.auth = manager
     app.middleware("http")(auth.auth_middleware)
     app.include_router(auth.router)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        # FastAPI's default answer repeats the submitted body, password included.
+        return JSONResponse({"detail": "Invalid request."}, status_code=422)
 
     # Plain `def` handlers run in Starlette's thread pool, so their blocking
     # work (psutil sampling, conntrack, sockets) never stalls the event loop

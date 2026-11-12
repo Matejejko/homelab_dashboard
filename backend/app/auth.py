@@ -98,6 +98,10 @@ class Throttled(Exception):
         self.retry_after = max(1, math.ceil(retry_after))
 
 
+class StorageError(Exception):
+    """auth.json could not be written."""
+
+
 class PasswordRejected(Exception):
     def __init__(self, code: str, message: str):
         self.code = code
@@ -148,8 +152,9 @@ class AuthManager:
         # Plaintext first: a crash in between leaves no account, never an
         # account whose password was not written down anywhere.
         _write_private(self.initial_password_file, (initial + "\n").encode("ascii"))
-        self._record = self._make_record(initial, must_change=True)
-        self._save()
+        record = self._make_record(initial, must_change=True)
+        self._save(record)
+        self._record = record
         logger.info(
             "created account %r with a one-time password, stored in %s",
             USERNAME, self.initial_password_file,
@@ -186,8 +191,8 @@ class AuthManager:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
 
-    def _save(self) -> None:
-        _write_private(self.auth_file, (json.dumps(self._record, indent=2) + "\n").encode("ascii"))
+    def _save(self, record: dict) -> None:
+        _write_private(self.auth_file, (json.dumps(record, indent=2) + "\n").encode("ascii"))
 
     @property
     def must_change(self) -> bool:
@@ -204,11 +209,14 @@ class AuthManager:
             salt, expected = bytes.fromhex(record["salt"]), bytes.fromhex(record["hash"])
             n, r, p = record["n"], record["r"], record["p"]
         try:
+            # Text that cannot be encoded (lone surrogates) raises ValueError
+            # here and is simply a wrong credential.
+            name = username.encode("utf-8")
             digest = _scrypt(password, salt, n, r, p)
         except (ValueError, MemoryError):
             return False
         password_ok = expected is not None and hmac.compare_digest(digest, expected)
-        username_ok = hmac.compare_digest(username.encode("utf-8"), USERNAME.encode("utf-8"))
+        username_ok = hmac.compare_digest(name, USERNAME.encode("utf-8"))
         return password_ok and username_ok
 
     # ── Throttle (global: behind the NodePort every client shares one IP) ──
@@ -298,13 +306,18 @@ class AuthManager:
 
         Raises PasswordRejected or Throttled.
         """
+        try:
+            new_bytes, current_bytes = new.encode("utf-8"), current.encode("utf-8")
+        except UnicodeEncodeError:
+            raise PasswordRejected(
+                "password_invalid", "The password contains characters that cannot be used.") from None
         if len(new) < PASSWORD_MIN:
             raise PasswordRejected(
                 "password_too_short", f"The new password must be at least {PASSWORD_MIN} characters.")
         if len(new) > PASSWORD_MAX:
             raise PasswordRejected(
                 "password_too_long", f"The new password must be at most {PASSWORD_MAX} characters.")
-        if hmac.compare_digest(new.encode("utf-8"), current.encode("utf-8")):
+        if hmac.compare_digest(new_bytes, current_bytes):
             raise PasswordRejected(
                 "password_unchanged", "The new password must differ from the current one.")
 
@@ -316,8 +329,13 @@ class AuthManager:
             self._record_success()
             record = self._make_record(new, must_change=False)
             with self._lock:
+                # Disk first: if the write fails, the old password stays the
+                # password, in memory and on disk alike.
+                try:
+                    self._save(record)
+                except OSError as exc:
+                    raise StorageError(type(exc).__name__) from None
                 self._record = record
-                self._save()
                 self._sessions.clear()          # ends every session, this one included
 
         self._remove_initial_password_file()
@@ -393,6 +411,13 @@ def _same_origin(request: Request) -> bool:
 
 
 async def auth_middleware(request: Request, call_next):
+    """Every request passes through here. Answers are never to be cached."""
+    response = await _guard(request, call_next)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def _guard(request: Request, call_next):
     """Origin check, body cap, session and forced-password-change enforcement."""
     auth: AuthManager = request.app.state.auth
     method = request.method.upper()
@@ -480,6 +505,9 @@ async def change_password(body: PasswordBody, request: Request):
             429, "Too many failed attempts. Try again later.",
             headers={"Retry-After": str(exc.retry_after)},
         )
+    except StorageError as exc:
+        logger.error("password change failed: auth.json could not be written (%s)", exc)
+        return _error(500, "The new password could not be saved. The old one is still valid.", "storage_error")
     except PasswordRejected as exc:
         if exc.code == "invalid_current_password":
             logger.warning("password change refused: wrong current password (client=%s)", _client(request))

@@ -438,6 +438,88 @@ def test_origin_must_match_the_port_too(app, data_dir):
 
 # ─── Hardening ───────────────────────────────────────────────────────────────
 
+# ─── Findings from the pre-merge audit ───────────────────────────────────────
+
+def raw_post(client, path, body: bytes):
+    return client.post(path, content=body, headers={**ORIGIN, "Content-Type": "application/json"})
+
+
+@pytest.mark.parametrize("body", [
+    b'{"username": "\\ud800", "password": "x"}',
+    b'{"username": "admin", "password": "\\ud800abc"}',
+    b'{"username": "\\udfff\\ud800", "password": "\\udc00"}',
+])
+def test_unencodable_credentials_are_just_wrong_not_a_crash(client, body):
+    response = raw_post(client, "/api/auth/login", body)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid username or password."}
+
+
+def test_unencodable_new_secret_is_rejected_cleanly(client, data_dir):
+    secret = initial_secret(data_dir)
+    login(client, secret)
+    body = ('{"current_password": "%s", "new_password": "\\ud800aaaaaaaaaaaaaaaa"}' % secret).encode()
+    response = raw_post(client, "/api/auth/password", body)
+    assert response.status_code == 400
+    assert response.json()["code"] == "password_invalid"
+    assert client.get("/api/config").status_code == 403          # nothing changed
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/api/auth/login", b'{"password": "Typed-In-The-Wrong-Place-1"}'),
+    ("/api/auth/login", b'{"username": {"x": 1}, "password": "Typed-In-The-Wrong-Place-1"}'),
+    ("/api/auth/login", b'["Typed-In-The-Wrong-Place-1"]'),
+    ("/api/auth/login", b'not json Typed-In-The-Wrong-Place-1'),
+    ("/api/auth/password", b'{"current_password": "Typed-In-The-Wrong-Place-1"}'),
+])
+def test_validation_errors_never_echo_what_was_sent(ready, path, body):
+    response = raw_post(ready, path, body)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid request."}
+    assert "Typed-In-The-Wrong-Place-1" not in response.text
+
+
+def test_failed_write_keeps_the_old_secret_everywhere(app, client, data_dir, monkeypatch, caplog):
+    secret = initial_secret(data_dir)
+    login(client, secret)
+    before = (data_dir / "auth.json").read_text()
+
+    def disk_full(path, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(auth, "_write_private", disk_full)
+    with caplog.at_level(logging.ERROR):
+        response = change(client, secret, NEW_SECRET)
+    assert response.status_code == 500
+    assert response.json()["code"] == "storage_error"
+    assert "could not be written" in caplog.text
+    assert NEW_SECRET not in caplog.text and secret not in caplog.text
+    monkeypatch.undo()
+
+    assert (data_dir / "auth.json").read_text() == before
+    assert app.state.auth.must_change is True
+    assert (data_dir / "initial-admin-password").exists()
+    assert client.get("/api/auth/session").json()["authenticated"] is True      # session kept
+    assert login(make_client(app), NEW_SECRET).status_code == 401               # not live in memory either
+    assert login(make_client(app), secret).status_code == 204
+
+
+def test_api_answers_are_never_cacheable(app, client, ready):
+    anonymous = make_client(app)
+    responses = [
+        anonymous.get("/api/health"),                                  # 200, open
+        anonymous.get("/api/auth/session"),                            # 200, open
+        anonymous.get("/api/config"),                                  # 401
+        anonymous.get("/nowhere"),                                     # 404
+        anonymous.post("/api/auth/logout", headers={"Origin": "http://evil.example"}),   # 403
+        raw_post(anonymous, "/api/auth/login", b"{}"),                 # 422
+        ready.get("/api/config"),                                      # 200, signed in
+    ]
+    assert [r.status_code for r in responses] == [200, 200, 401, 404, 403, 422, 200]
+    for response in responses:
+        assert response.headers["cache-control"] == "no-store", response.status_code
+
+
 def test_oversized_bodies_are_refused_before_parsing(client):
     response = client.post(
         "/api/auth/login", json={"username": "admin", "password": "x" * 9000}, headers=ORIGIN,
