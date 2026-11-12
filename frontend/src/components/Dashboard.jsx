@@ -62,6 +62,12 @@ export default function Dashboard({ theme, onToggleTheme, onLogout }) {
     zerotier: (cfg && cfg.zt_ip) || '',
   }), [cfg]);
 
+  // CARTO API key for the map tiles. null until /api/config has answered, so
+  // the map does not fetch keyless tiles first and then fetch them all again.
+  let tileKey = null;
+  if (cfg) tileKey = typeof cfg.tile_key === 'string' ? cfg.tile_key : '';
+  else if (config.error) tileKey = '';
+
   // A location set in Settings wins over the one from /api/config.
   const defaultLocation = useMemo(
     () => ({ lat: (cfg && cfg.server_lat) || 0, lng: (cfg && cfg.server_lng) || 0 }),
@@ -146,6 +152,7 @@ export default function Dashboard({ theme, onToggleTheme, onLogout }) {
           addresses={addresses}
           pins={layout.devices}
           theme={theme}
+          tileKey={tileKey}
         />
 
         <ServiceGrid

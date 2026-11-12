@@ -504,7 +504,7 @@ def test_data_routes_answer_after_the_change(ready, monkeypatch):
 
     config = ready.get("/api/config")
     assert config.status_code == 200
-    assert set(config.json()) == {"lan_ip", "zt_ip", "ts_ip", "server_lat", "server_lng"}
+    assert set(config.json()) == {"lan_ip", "zt_ip", "ts_ip", "server_lat", "server_lng", "tile_key"}
 
     svc = ready.get("/api/services")
     assert svc.status_code == 200
@@ -520,6 +520,15 @@ def test_data_routes_answer_after_the_change(ready, monkeypatch):
     system = ready.get("/api/system")
     assert system.status_code == 200
     assert set(system.json()) == {"cpu", "ram", "disks", "uptime", "temp_c", "network"}
+
+
+def test_tile_key_is_served_only_to_a_signed_in_session(app, ready, data_dir):
+    (data_dir / "carto-api-key").write_text("Example-Key_123\n")
+    assert ready.get("/api/config").json()["tile_key"] == "Example-Key_123"
+
+    anonymous = make_client(app).get("/api/config")
+    assert anonymous.status_code == 401
+    assert "Example-Key_123" not in anonymous.text
 
 
 def test_old_devices_endpoint_is_gone(ready):

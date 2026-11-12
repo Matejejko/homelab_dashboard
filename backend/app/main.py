@@ -7,9 +7,7 @@ through the frontend's nginx. Every protection therefore lives here.
 """
 
 import logging
-import os
 import time
-from pathlib import Path
 
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
@@ -24,7 +22,7 @@ def create_app() -> FastAPI:
     # No interactive docs and no schema: they describe the API to anyone who asks.
     app = FastAPI(title="Homelab Dashboard API", docs_url=None, redoc_url=None, openapi_url=None)
 
-    manager = auth.AuthManager(Path(os.environ.get("DASHBOARD_DATA_DIR", "/data")))
+    manager = auth.AuthManager(system.data_dir())
     manager.bootstrap()
     app.state.auth = manager
     app.middleware("http")(auth.auth_middleware)

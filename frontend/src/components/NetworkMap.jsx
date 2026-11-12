@@ -5,10 +5,16 @@ import { el, renderPeerPopup, renderPinPopup, renderServerPopup } from '../mapPo
 import { lineWeight } from '../peers.js';
 import Icon from './Icon.jsx';
 
-const TILE_URL = {
-  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-};
+// CARTO's raster endpoint. Since 25 September 2026 it wants ?key=... on every
+// tile; without a key it answers with a notice tile instead of the basemap.
+const TILE_STYLE = { dark: 'dark_all', light: 'light_all' };
+
+function tileUrl(theme, key) {
+  const style = TILE_STYLE[theme] || TILE_STYLE.dark;
+  const query = key ? `?key=${encodeURIComponent(key)}` : '';
+  return `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}{r}.png${query}`;
+}
+
 const ATTRIBUTION = '© OpenStreetMap contributors © CARTO';
 
 // A 24 px hit target centred on the exact coordinate, with the pin in its middle.
@@ -47,9 +53,10 @@ const pinKey = (pin, n) => `pin:${pin.type}:${pin.lat}:${pin.lng}:${pin.name}:${
  *   sitePeers  peers at the server site: one badge on the server marker
  *   pins       manual pins from Settings
  *   accounting whether byte counters are available (drives line weight)
+ *   tileKey    CARTO API key from /api/config: null while unknown, '' when none
  * Ref: focusPeer(ip), focusServer()
  */
-export default function NetworkMap({ ref, server, addresses, peers, sitePeers, pins, accounting, theme }) {
+export default function NetworkMap({ ref, server, addresses, peers, sitePeers, pins, accounting, theme, tileKey }) {
   const canvasRef = useRef(null);
   const mapRef = useRef(null);
   const tilesRef = useRef(null);
@@ -60,7 +67,6 @@ export default function NetworkMap({ ref, server, addresses, peers, sitePeers, p
   const fitSigRef = useRef('');
   const autoFitRef = useRef(true);
   const programmaticRef = useRef(false);
-  const themeRef = useRef(theme);
 
   const [autoFit, setAutoFit] = useState(true);
   const [tilesDown, setTilesDown] = useState(false);
@@ -87,18 +93,7 @@ export default function NetworkMap({ ref, server, addresses, peers, sitePeers, p
   useEffect(() => {
     const canvas = canvasRef.current;
     const map = L.map(canvas, { worldCopyJump: true, minZoom: 1, zoomSnap: 0.5 }).setView([25, 10], 2);
-    const tiles = L.tileLayer(TILE_URL[themeRef.current] || TILE_URL.dark, {
-      attribution: ATTRIBUTION,
-      subdomains: 'abcd',
-      maxZoom: 19,
-    });
-    // Markers and lines never depend on the tiles: if they fail, say so and carry on.
-    tiles.on('tileerror', () => setTilesDown(true));
-    tiles.on('tileload', () => setTilesDown(false));
-    tiles.addTo(map);
-
     mapRef.current = map;
-    tilesRef.current = tiles;
     linesRef.current = L.layerGroup().addTo(map);
 
     // Auto-fit lasts until the user takes over the view.
@@ -130,11 +125,24 @@ export default function NetworkMap({ ref, server, addresses, peers, sitePeers, p
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Theme: swap the tile style, keep everything else ─────────────────────
+  // ── Tiles: added once the key is known, re-pointed on theme or key change ──
   useEffect(() => {
-    themeRef.current = theme;
-    if (tilesRef.current) tilesRef.current.setUrl(TILE_URL[theme] || TILE_URL.dark);
-  }, [theme]);
+    const map = mapRef.current;
+    // Not a single tile is requested before /api/config has said whether there
+    // is a key: a keyless request would only fetch CARTO's notice tiles.
+    if (!map || tileKey === null) return;
+    const url = tileUrl(theme, tileKey);
+    if (tilesRef.current) {
+      tilesRef.current.setUrl(url);
+      return;
+    }
+    const tiles = L.tileLayer(url, { attribution: ATTRIBUTION, subdomains: 'abcd', maxZoom: 19 });
+    // Markers and lines never depend on the tiles: if they fail, say so and carry on.
+    tiles.on('tileerror', () => setTilesDown(true));
+    tiles.on('tileload', () => setTilesDown(false));
+    tiles.addTo(map);
+    tilesRef.current = tiles;
+  }, [theme, tileKey]);
 
   // ── Sync layers by diff: add, update in place, remove. Never rebuild. ────
   useEffect(() => {

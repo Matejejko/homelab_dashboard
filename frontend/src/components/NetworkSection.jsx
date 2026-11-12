@@ -7,7 +7,7 @@ import ServerAddress from './ServerAddress.jsx';
 
 const EMPTY = [];
 
-export default function NetworkSection({ network, error, server, addresses, pins, theme }) {
+export default function NetworkSection({ network, error, server, addresses, pins, theme, tileKey }) {
   const mapRef = useRef(null);
   const peers = network && Array.isArray(network.peers) ? network.peers : EMPTY;
   const accounting = Boolean(network && network.accounting);
@@ -40,6 +40,7 @@ export default function NetworkSection({ network, error, server, addresses, pins
             pins={pins}
             accounting={accounting}
             theme={theme}
+            tileKey={tileKey}
           />
           <p className="network__caption">
             Locations are IP-geolocation estimates: city-level at best. Mobile and VPN users appear at
@@ -48,6 +49,12 @@ export default function NetworkSection({ network, error, server, addresses, pins
           {!server && (
             <p className="network__caption">
               The server location is not set, so the server and local peers are not drawn. Set it in Settings.
+            </p>
+          )}
+          {tileKey === '' && (
+            <p className="network__caption">
+              No CARTO API key is set, so the map background shows CARTO&rsquo;s notice instead of the basemap.
+              Save a key to /var/lib/homelab-dashboard/carto-api-key on the server (see the README).
             </p>
           )}
           <ul className="legend" aria-label="Map legend">

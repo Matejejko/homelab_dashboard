@@ -11,7 +11,7 @@ Browser → NodePort :30300 → frontend (unprivileged nginx + React)
                                                     ├── /api/auth/*    login, logout, session, password
                                                     ├── /api/system    host CPU, RAM, disks, temperature
                                                     ├── /api/services  k8s + Docker discovery + health
-                                                    ├── /api/config    server addresses, read from interfaces
+                                                    ├── /api/config    server addresses (read from interfaces), map tile key
                                                     ├── /api/network   conntrack → peers, direction, bytes
                                                     └── /api/health    liveness (the only open data route)
 ```
@@ -183,6 +183,14 @@ Environment variables of the backend, in `02-backend.yaml`:
 | `HOST_PROC` / `HOST_SYS` / `HOST_ROOT` | `/host/proc` / `/host/sys` / `/host/root` | Where the host filesystems are mounted in the pod. |
 | `SERVICES_FILE` | `/config/services.json` | Manual services, mounted from the ConfigMap. |
 
+Files in `/var/lib/homelab-dashboard` on the host (mounted at `/data`):
+
+| File | Purpose |
+|---|---|
+| `auth.json` | The account: scrypt hash and salt. Delete it to reset the password. |
+| `initial-admin-password` | The one-time password. Exists only until the first password change. |
+| `carto-api-key` | Optional. Your CARTO Basemaps API key for the map tiles, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key). |
+
 Per browser (localStorage): theme, groups, service overrides, manual map pins and, optionally, a server location that overrides the one from the manifest. Server addresses are never stored in the browser.
 
 ---
@@ -277,11 +285,21 @@ Nothing is ever placed at an invented position.
 
 ### Map tiles need a CARTO API key
 
-The basemap comes from CARTO (`dark_all` and `light_all`). **Since 25 September 2026 CARTO no longer serves these tiles without an API key**: a request without one gets a blank tile reading "API KEY REQUIRED" instead of the map. This version sends no key, so until key support is added the map background shows that notice. Markers, lines, popups and the peer list do not depend on the tiles and work regardless.
+The basemap comes from CARTO (`dark_all` and `light_all`). **Since 25 September 2026 CARTO no longer serves these tiles without an API key**: a request without one gets a blank tile reading "API KEY REQUIRED" instead of the map. Markers, lines, popups and the peer list do not depend on the tiles and work either way.
 
-A key is free for personal use (request it at <https://carto.com/basemaps/apikey>) and is added to tile URLs as `?key=...`. Two things to know before wiring one in:
+A key is free for personal use. Request one at <https://carto.com/basemaps/apikey> (it arrives by e-mail), then save it on the server, alone in this file:
 
-- A key with **website restrictions** is checked against the `Referer` header. This dashboard sends `Referrer-Policy: no-referrer`, so a restricted key would be refused. Use an unrestricted key, or relax that header in `frontend/nginx.conf`.
+```bash
+sudo mkdir -p /var/lib/homelab-dashboard
+echo 'YOUR-KEY' | sudo tee /var/lib/homelab-dashboard/carto-api-key >/dev/null
+sudo chmod 600 /var/lib/homelab-dashboard/carto-api-key
+```
+
+No restart and no redeploy: the backend reads the file on every `/api/config` request, so open dashboards pick it up within a minute, or at once on reload. To change the key, overwrite the file; to stop using it, delete the file.
+
+- The key is kept **out of the repository and the manifests** on purpose. It is handed only to signed-in browsers (in `/api/config`, as `tile_key`), which add it to the tile URLs as `?key=...`. It is never written to the logs.
+- Paste the key exactly as issued. Keys are case-sensitive, and CARTO treats a wrong or incomplete key as no key: the notice stays and no error is shown. Your browser also caches tiles, so reload after adding a key.
+- Leave the key **without website restrictions**. CARTO checks restricted keys against the `Referer` header, and this dashboard sends `Referrer-Policy: no-referrer`, so a restricted key is refused ("Map tiles unavailable" then appears on the map).
 - CARTO's terms require the attribution and its notices to stay visible. Do not hide the notice with CSS.
 
 ### Accuracy
@@ -377,6 +395,7 @@ npm run build
 | Backend logs (logins are logged, never secrets) | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
 | Frontend logs | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
 | One-time password | `sudo cat /var/lib/homelab-dashboard/initial-admin-password` |
+| Set the map tile key | `echo 'YOUR-KEY' \| sudo tee /var/lib/homelab-dashboard/carto-api-key >/dev/null` |
 | Edit manual services | `sudo kubectl edit configmap homelab-services -n homelab` |
 | Is byte accounting on? | `sysctl net.netfilter.nf_conntrack_acct` |
 | Change the connection timeout | `sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300` |
@@ -422,7 +441,7 @@ homelab_dashboard/
 
 ## Notes & Gotchas
 
-- **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a key, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
+- **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a valid key. Put your key in `/var/lib/homelab-dashboard/carto-api-key`, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
 - **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
 - **Temperature** shows "n/a" when the host has no readable sensor.
 - **Self-signed HTTPS services** are reported offline: the health check verifies certificates.

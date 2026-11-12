@@ -1,3 +1,7 @@
+import logging
+
+import pytest
+
 from app import system
 
 from .conftest import HOST_ADDRS, LAN_IFACE, TS_IFACE, ZT_IFACE
@@ -21,6 +25,12 @@ def test_iface_ipv4_is_empty_for_an_empty_name():
     assert system.iface_ipv4("", HOST_ADDRS) == ""
 
 
+@pytest.fixture(autouse=True)
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
 def test_config_is_resolved_from_env_named_interfaces_on_every_call(monkeypatch):
     current = dict(HOST_ADDRS)
     monkeypatch.setattr(system.psutil, "net_if_addrs", lambda: current)
@@ -32,7 +42,7 @@ def test_config_is_resolved_from_env_named_interfaces_on_every_call(monkeypatch)
 
     assert system.get_config() == {
         "lan_ip": "192.0.2.10", "zt_ip": "", "ts_ip": "100.64.0.1",
-        "server_lat": 48.946, "server_lng": 20.566,
+        "server_lat": 48.946, "server_lng": 20.566, "tile_key": "",
     }
 
     # The interface comes up later / changes address: the next call sees it.
@@ -49,8 +59,61 @@ def test_config_without_any_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(system.psutil, "net_if_addrs", lambda: HOST_ADDRS)
     assert system.get_config() == {
-        "lan_ip": "", "zt_ip": "", "ts_ip": "", "server_lat": 0.0, "server_lng": 0.0,
+        "lan_ip": "", "zt_ip": "", "ts_ip": "", "server_lat": 0.0, "server_lng": 0.0, "tile_key": "",
     }
+
+
+# ─── Map tile key file ───────────────────────────────────────────────────────
+
+SAMPLE_KEY = "Abc123_exampleKey-xyz.789"       # made up; CARTO keys are case-sensitive
+
+
+def test_tile_key_is_empty_without_the_file():
+    assert system.tile_key() == ""
+    assert system.get_config()["tile_key"] == ""
+
+
+def test_tile_key_is_read_from_the_data_dir_and_keeps_its_case(data_dir):
+    (data_dir / "carto-api-key").write_text(f"  {SAMPLE_KEY}\n\n")
+    assert system.tile_key() == SAMPLE_KEY
+    assert system.get_config()["tile_key"] == SAMPLE_KEY
+
+
+def test_tile_key_changes_are_picked_up_without_a_restart(data_dir):
+    path = data_dir / "carto-api-key"
+    path.write_text("first-key\n")
+    assert system.tile_key() == "first-key"
+    path.write_text("second-key\n")
+    assert system.tile_key() == "second-key"
+    path.unlink()
+    assert system.tile_key() == ""
+
+
+@pytest.mark.parametrize("content", [
+    "",
+    "\n\n",
+    "two words",
+    "key-one\nkey-two\n",
+    "kľúč-with-non-ascii",
+    "tab\tseparated",
+    "x" * 513,
+])
+def test_unusable_tile_key_files_are_ignored(data_dir, content):
+    (data_dir / "carto-api-key").write_text(content, encoding="utf-8")
+    assert system.tile_key() == ""
+
+
+def test_tile_key_is_never_logged(data_dir, caplog):
+    path = data_dir / "carto-api-key"
+    with caplog.at_level(logging.DEBUG):
+        path.write_text(f"{SAMPLE_KEY}\n")
+        system.get_config()
+        path.write_text(f"{SAMPLE_KEY} trailing-word\n")       # unusable: warns once
+        system.get_config()
+        system.get_config()
+    assert SAMPLE_KEY not in caplog.text
+    warnings = [r for r in caplog.records if r.name == "homelab.system"]
+    assert len(warnings) == 1 and "carto-api-key is ignored" in warnings[0].getMessage()
 
 
 def test_bad_coordinates_fall_back_to_unset(monkeypatch):

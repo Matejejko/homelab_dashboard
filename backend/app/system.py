@@ -4,12 +4,15 @@ The pod runs with hostNetwork/hostPID and the host's /proc, /sys and / mounted
 in, so psutil and the files below describe the node, not the container.
 """
 
+import logging
 import os
 import socket
 import time
 from pathlib import Path
 
 import psutil
+
+logger = logging.getLogger("homelab.system")
 
 
 def host_proc() -> Path:
@@ -22,6 +25,11 @@ def host_sys() -> Path:
 
 def host_root() -> Path:
     return Path(os.environ.get("HOST_ROOT", "/"))
+
+
+def data_dir() -> Path:
+    """Persistent state: the account file and, optionally, the map tile key."""
+    return Path(os.environ.get("DASHBOARD_DATA_DIR", "/data"))
 
 
 # ─── Server identity ─────────────────────────────────────────────────────────
@@ -66,6 +74,41 @@ def server_location() -> tuple[float, float]:
     return _coord("DASHBOARD_SERVER_LAT", 90.0), _coord("DASHBOARD_SERVER_LNG", 180.0)
 
 
+TILE_KEY_FILE = "carto-api-key"
+TILE_KEY_MAX = 512
+_warned_bad_tile_key = False
+
+
+def tile_key() -> str:
+    """CARTO Basemaps API key from $DASHBOARD_DATA_DIR/carto-api-key, or "".
+
+    The file is read on every call, so saving a new key needs no restart. The
+    key lives outside the repository and the manifests on purpose, and it is
+    never logged.
+    """
+    global _warned_bad_tile_key
+    try:
+        with (data_dir() / TILE_KEY_FILE).open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(4096)
+    except OSError:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    key = lines[0]
+    # One line of visible ASCII. The case is kept: CARTO keys are case-sensitive.
+    if len(lines) > 1 or len(key) > TILE_KEY_MAX or not all("!" <= ch <= "~" for ch in key):
+        if not _warned_bad_tile_key:
+            _warned_bad_tile_key = True
+            logger.warning(
+                "%s is ignored: it must hold the key alone, on one line, without spaces", TILE_KEY_FILE,
+            )
+        return ""
+    _warned_bad_tile_key = False
+    return key
+
+
 def get_config() -> dict:
     """Server addresses, resolved from the named interfaces on every call."""
     addrs = psutil.net_if_addrs()
@@ -76,6 +119,7 @@ def get_config() -> dict:
         "ts_ip": iface_ipv4(ts_iface(), addrs),
         "server_lat": lat,
         "server_lng": lng,
+        "tile_key": tile_key(),
     }
 
 
