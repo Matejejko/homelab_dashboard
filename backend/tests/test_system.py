@@ -125,10 +125,80 @@ def test_bad_coordinates_fall_back_to_unset(monkeypatch):
 def test_system_shape():
     data = system.get_system()
     assert set(data) == {"cpu", "ram", "disks", "uptime", "temp_c", "network"}
-    assert set(data["cpu"]) == {"percent", "cores", "threads", "freq_mhz", "load_avg"}
+    assert set(data["cpu"]) == {"percent", "cores", "threads", "freq_mhz", "load_avg", "model"}
+    assert isinstance(data["cpu"]["model"], str)
     assert set(data["ram"]) == {"total_gb", "used_gb", "free_gb", "percent"}
     assert set(data["uptime"]) == {"days", "hours", "minutes", "total_seconds"}
-    assert set(data["network"]) == {"rx_mb_s", "tx_mb_s"}
+    assert set(data["network"]) == {"rx_mb_s", "tx_mb_s", "iface"}
+    assert data["network"]["rx_mb_s"] >= 0 and data["network"]["tx_mb_s"] >= 0
     assert isinstance(data["disks"], list)
     for disk in data["disks"]:
         assert set(disk) == {"mount", "device", "fstype", "total_gb", "used_gb", "free_gb", "pct"}
+
+
+# ─── CPU model and per-interface throughput (for the graph cards) ────────────
+
+@pytest.fixture
+def fresh_cpu_model(monkeypatch):
+    monkeypatch.setattr(system, "_cpu_model", None)
+
+
+@pytest.mark.parametrize("cpuinfo, expected", [
+    ("processor\t: 0\nvendor_id\t: GenuineIntel\nmodel\t\t: 94\nmodel name\t: Intel(R) Core(TM) i5-6500T CPU @ 2.50GHz\n",
+     "Intel Core i5-6500T CPU @ 2.50GHz"),
+    ("processor\t: 0\nBogoMIPS\t: 108.00\n\nHardware\t: BCM2835\nModel\t\t: Raspberry Pi 4 Model B Rev 1.4\n",
+     "Raspberry Pi 4 Model B Rev 1.4"),
+    ("processor\t: 0\nBogoMIPS\t: 50.00\n", ""),
+    ("", ""),
+])
+def test_cpu_model_is_read_from_host_cpuinfo(tmp_path, monkeypatch, fresh_cpu_model, cpuinfo, expected):
+    (tmp_path / "cpuinfo").write_text(cpuinfo)
+    monkeypatch.setenv("HOST_PROC", str(tmp_path))
+    assert system.cpu_model() == expected
+
+
+def test_cpu_model_without_cpuinfo_is_empty_and_retried(tmp_path, monkeypatch, fresh_cpu_model):
+    monkeypatch.setenv("HOST_PROC", str(tmp_path))
+    assert system.cpu_model() == ""
+    (tmp_path / "cpuinfo").write_text("model name : Example CPU\n")
+    assert system.cpu_model() == "Example CPU"
+
+
+class FakeCounters:
+    def __init__(self, recv, sent):
+        self.bytes_recv, self.bytes_sent = recv, sent
+
+
+def test_network_rate_is_measured_on_the_lan_interface(monkeypatch):
+    calls = []
+
+    def counters(pernic=False):
+        calls.append(pernic)
+        step = (len(calls) - 1) * 1_000_000          # +1 MB on the LAN NIC between the two reads
+        per_nic = {
+            LAN_IFACE: FakeCounters(5_000_000 + step, 2_000_000 + step // 2),
+            "cni0": FakeCounters(900_000_000 + 50 * step, 900_000_000 + 50 * step),
+            "lo": FakeCounters(10**12, 10**12),
+        }
+        return per_nic if pernic else FakeCounters(10**12, 10**12)
+
+    monkeypatch.setenv("DASHBOARD_LAN_IFACE", LAN_IFACE)
+    monkeypatch.setattr(system.psutil, "net_io_counters", counters)
+    monkeypatch.setattr(system.psutil, "cpu_percent", lambda interval: 12.5)
+    monkeypatch.setattr(system.time, "monotonic", iter([100.0, 101.0]).__next__)
+
+    network = system.get_system()["network"]
+    assert network == {"rx_mb_s": 1.0, "tx_mb_s": 0.5, "iface": LAN_IFACE}
+    assert calls == [True, True]
+
+
+def test_network_rate_falls_back_to_every_interface(monkeypatch):
+    def counters(pernic=False):
+        return {"eth9": FakeCounters(0, 0)} if pernic else FakeCounters(7_000_000, 3_000_000)
+
+    monkeypatch.setenv("DASHBOARD_LAN_IFACE", "not-there0")
+    monkeypatch.setattr(system.psutil, "net_io_counters", counters)
+    monkeypatch.setattr(system.psutil, "cpu_percent", lambda interval: 1.0)
+    network = system.get_system()["network"]
+    assert network["iface"] == ""
+    assert (network["rx_mb_s"], network["tx_mb_s"]) == (0.0, 0.0)

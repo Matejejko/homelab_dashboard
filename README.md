@@ -22,7 +22,7 @@ Browser → NodePort :30300 → frontend (unprivileged nginx + React)
 
 ## Features
 
-- **Host metrics**: CPU, RAM, temperature, uptime, network throughput and disk usage per real filesystem, read from the host's `/proc` and `/sys`.
+- **Host metrics**: live graphs of CPU, RAM and network throughput over the last five minutes, a storage card with one row per real filesystem, temperature and uptime, all read from the host's `/proc` and `/sys`.
 - **Service auto-discovery** from Kubernetes Services (NodePort, LoadBalancer, Ingress, Traefik `IngressRoute`), Docker containers with published ports, and an optional ConfigMap.
 - **Health checks** that fit the service: web pages are requested over HTTP, game servers and other non-web services are checked on their TCP or UDP port. See [How "online" is decided](#how-online-is-decided).
 - **Network map**: peers from the kernel's conntrack table (TCP and UDP, IPv4 and IPv6, inbound and outbound), classified as LAN / Tailscale / ZeroTier / WAN, with byte counters when the kernel provides them.
@@ -340,9 +340,21 @@ Bytes per peer need `net.netfilter.nf_conntrack_acct=1`, which `deploy.sh` enabl
 - Markers of peers in the same city overlap. Use the peer list: clicking a row pans to the marker and opens its popup.
 - The map follows the data until you pan or zoom; **Fit** turns that back on.
 - You can add **manual pins** under Settings (hollow markers). They are positions you chose, not measurements.
-- Polling: system 5 s, network 10 s, services 15 s, addresses 60 s.
+- Polling: system about every 3 s, network 10 s, services 15 s, addresses 60 s.
 
 ---
+
+## System Graphs
+
+CPU, RAM and network each have a card with the current value and a graph of the last five minutes.
+
+- **The history lives in the browser.** The backend keeps none, so the graphs start empty after a reload and fill as polls arrive (one point about every 3 seconds). A gap in the line means no data arrived then, for example while the tab was in the background.
+- **Network is measured on the LAN interface** (`DASHBOARD_LAN_IFACE`), named on the card. A host-wide total would count container traffic several times (veth, bridge and physical interface) and include loopback. If the interface is not found, the card says "all interfaces" and shows that total instead.
+- **Scales:** CPU and RAM always run from 0 to 100%. Network scales to the busiest moment on screen, and the top of the scale is written on the plot. Download is the filled blue series, upload the orange line; both share one scale.
+- **Reading a value:** move the pointer over a graph, or focus it and use the arrow keys, to read the values at one moment.
+- **Storage** has its own card: used, total and free space, device and filesystem for every disk. The bar turns amber above 65% and red above 85%.
+
+`/api/system` gained two fields for these cards: `cpu.model` and `network.iface`. Everything that was there before is unchanged.
 
 ## Editing Services in the UI
 
