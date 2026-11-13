@@ -1,34 +1,84 @@
 # Homelab Dashboard
 
-A self-hosted dashboard for a single-node **k3s** homelab. It surfaces real host hardware metrics, auto-discovers your services from Kubernetes and Docker, health-checks them, and shows who is currently connected to the box on a world map.
+A self-hosted dashboard for a single-node **k3s** homelab. It shows real host metrics, auto-discovers your services from Kubernetes and Docker, health-checks them, and draws the peers this server is talking to on a world map.
 
-Two pods, one namespace (`homelab`), one command to deploy.
+Two pods, one namespace (`homelab`), one command to deploy. Access is protected by a login.
 
 ```
-Browser → NodePort :30300 → frontend (nginx + React)
-                                ├── /          → React SPA (static files)
+Browser → NodePort :30300 → frontend (unprivileged nginx + React)
+                                ├── /          → static app
                                 └── /api/*     → backend pod :8000 (FastAPI)
-                                                    ├── /api/system    psutil reads host /proc /sys
-                                                    ├── /api/services  k8s + Docker auto-discovery + health
-                                                    ├── /api/config    LAN / ZeroTier / Tailscale IPs
-                                                    └── /api/devices   conntrack → connected clients
+                                                    ├── /api/auth/*    login, logout, session, password
+                                                    ├── /api/system    host CPU, RAM, disks, temperature
+                                                    ├── /api/services  k8s + Docker discovery + health
+                                                    ├── /api/config    server addresses (read from interfaces), map tile key
+                                                    ├── /api/network   conntrack → peers, direction, bytes
+                                                    └── /api/health    liveness (the only open data route)
 ```
+
+> **Plain HTTP only.** The dashboard has no TLS. Do **not** port-forward it to the internet. Reach it over your LAN, Tailscale or ZeroTier. See [Security](#security).
 
 ---
 
 ## Features
 
-- **Host metrics** — CPU %, frequency, cores/threads, load average, RAM, disk usage per real filesystem, temperature, uptime, network throughput. Read directly from the host's `/proc` and `/sys` (the backend bypasses the container's mount namespace by reading `/proc/1/mounts`).
-- **Service auto-discovery** — Three sources merged automatically:
-  - Kubernetes Services (NodePort, LoadBalancer, ClusterIP behind an Ingress, plus Traefik `IngressRoute` CRDs)
-  - Docker containers with published host ports (via `/var/run/docker.sock`)
-  - Optional ConfigMap entries for things that don't fit either
-- **Health checks** — Each discovered service is HTTP-pinged; the card shows online/offline + response time.
-- **Connected devices** — Backend reads the kernel's `conntrack` table to see real client IPs through k3s NAT, classifies them as LAN / Tailscale / ZeroTier / WAN, and (for WAN) geolocates them via ip-api.com.
-- **World map** — Leaflet (CartoDB Voyager / Dark Matter) with pins for every connected device.
-- **Multi-network URLs** — Each service card has LAN / Tailscale / ZeroTier buttons; URLs are rebuilt from whichever IPs you've configured.
-- **Customizable UI** — Drag-and-drop service groups, per-card name/icon/description overrides (browser localStorage), or set them at the source via Docker labels and k8s annotations.
-- **Theming** — Auto-follows OS dark/light preference, can be toggled in the header.
+- **Host metrics**: CPU, RAM, temperature, uptime, network throughput and disk usage per real filesystem, read from the host's `/proc` and `/sys`.
+- **Service auto-discovery** from Kubernetes Services (NodePort, LoadBalancer, Ingress, Traefik `IngressRoute`), Docker containers with published ports, and an optional ConfigMap.
+- **Health checks**: every service is requested over HTTP. Any answer below 500 is "online"; a 5xx or no answer is "offline".
+- **Network map**: peers from the kernel's conntrack table (TCP and UDP, IPv4 and IPv6, inbound and outbound), classified as LAN / Tailscale / ZeroTier / WAN, with byte counters when the kernel provides them.
+- **Honest locations**: a peer is drawn only where real data puts it. Everything else is listed as "not on map" with the reason.
+- **Multi-network links**: each service card links to the server's LAN, ZeroTier and Tailscale address. The addresses are read live from the network interfaces.
+- **Customisable**: flat or grouped view, drag-and-drop between groups, per-service name / icon / description, manual map pins, dark and light theme.
+- **Self-contained**: font and map library are bundled. The only third-party requests the page makes are map tiles.
+
+---
+
+## Security
+
+### First login
+
+There is one account, `admin`. The first time the backend starts it generates a random one-time password and stores it, readable by root only, on the host:
+
+```
+/var/lib/homelab-dashboard/initial-admin-password
+```
+
+`deploy.sh` prints the username and that password at the end of the deployment, for as long as the file exists. To read it again:
+
+```bash
+sudo cat /var/lib/homelab-dashboard/initial-admin-password
+```
+
+Sign in with it and the dashboard asks for a new password (12 to 256 characters) before showing anything else. Once you have changed it, the file is deleted. Change it again any time under **Settings → Change password**; that signs out every other session.
+
+### Password reset
+
+Delete the account file on the host and restart the backend. A new one-time password is generated exactly as on first start.
+
+```bash
+sudo rm /var/lib/homelab-dashboard/auth.json
+sudo kubectl rollout restart deployment/homelab-backend -n homelab
+sudo cat /var/lib/homelab-dashboard/initial-admin-password
+```
+
+### What is enforced, and where
+
+The backend pod uses `hostNetwork`, so port **8000 on the host reaches the API directly**, without passing through the frontend's nginx. Every control therefore lives in the backend itself:
+
+- Every `/api/*` route needs a session, except `/api/health`, `/api/auth/login` and `/api/auth/session`.
+- Passwords are stored as scrypt hashes (N=2^15, r=8, p=3, random 16-byte salt) in `auth.json`, mode 0600.
+- The session is a random token in an `HttpOnly`, `SameSite=Strict` cookie. Sessions live in memory: 12 hours idle, 7 days at most, and all of them end when the backend restarts.
+- After 5 failed logins in a row, **all** logins are refused for 60 seconds, doubling up to 15 minutes. The lock is global because every client arrives from the same address behind the NodePort. Someone on your network can therefore lock you out for a while by guessing; they cannot get in that way.
+- Requests that change state must carry an `Origin` header matching the host they were sent to. Scripts need to send it too, for example `curl -H "Origin: http://SERVER:30300" ...`.
+- No CORS, no `/docs`, no `/openapi.json`.
+- The frontend sends a Content-Security-Policy, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and runs as a non-root nginx with a read-only filesystem and no capabilities.
+- Service URLs are accepted only when they are `http://` or `https://`.
+
+### What is not protected
+
+- **No TLS.** On plain HTTP anyone who can see the traffic between your browser and the server can read the password and the session cookie. This is why the dashboard must stay on networks you trust: the LAN, Tailscale or ZeroTier (the last two encrypt the path themselves). Never port-forward 30300, 8000 or the Ingress to the internet.
+- **Cookies are shared across ports.** Browsers send the session cookie to every HTTP service on the same host name or IP, whatever the port. Any other service on this server could read it. Only run services you trust on the same address.
+- The backend is privileged by design (see [below](#why-the-backend-needs-so-much-privilege)). Treat access to the dashboard as access to information about the whole host.
 
 ---
 
@@ -36,28 +86,28 @@ Browser → NodePort :30300 → frontend (nginx + React)
 
 | Layer | Tech |
 |---|---|
-| Backend | Python 3.12, FastAPI, uvicorn, psutil, httpx, kubernetes client |
-| Frontend | React 18, plain CSS variables (no Tailwind/MUI), Leaflet.js |
-| Container runtime | Docker (build), k3s containerd (runtime) |
-| Orchestration | k3s (single-node), Traefik Ingress (optional) |
-| Reverse proxy | nginx inside the frontend pod (`/api/*` → backend Service) |
+| Backend | Python 3.14, FastAPI, uvicorn, psutil, httpx, kubernetes client (versions pinned in `backend/requirements.txt`) |
+| Frontend | React 19, Vite 8, Leaflet 1.9, plain CSS (versions locked in `frontend/package-lock.json`) |
+| Images | `python:3.14-slim`, `node:26-alpine` (build only), `nginxinc/nginx-unprivileged:1.30-alpine` |
+| Orchestration | k3s (single node), Traefik Ingress (optional) |
+| Font | JetBrainsMono Nerd Font, self-hosted (SIL OFL 1.1, licence in `frontend/src/assets/fonts/OFL.txt`) |
 
 ---
 
 ## Prerequisites
 
-Run on the same Linux host that runs k3s:
+On the Linux host that runs k3s:
 
 ```bash
 # k3s
 curl -sfL https://get.k3s.io | sh -
 
-# Docker (needed to build the images)
+# Docker (to build the images)
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER   # then log out and back in
 ```
 
-The deploy script also assumes `kubectl` is on `PATH` (k3s installs it at `/usr/local/bin/kubectl`).
+`kubectl` must be on `PATH` (k3s installs it at `/usr/local/bin/kubectl`).
 
 ---
 
@@ -70,38 +120,43 @@ git clone https://github.com/Matejejko/homelab_dashboard.git
 cd homelab_dashboard
 ```
 
-### 2. (Optional) Pre-configure the disk filter
+### 2. Name your network interfaces
 
-`02-backend.yaml` shows all real block-device filesystems by default. To restrict the disk panel to specific mounts:
+The server's addresses are not typed in anywhere. The backend reads them from the interfaces named in `02-backend.yaml`, on every request, so a changed DHCP lease or a VPN that comes up later is picked up by itself. Check the names with `ip a` and edit them if yours differ:
+
+```yaml
+- name: DASHBOARD_LAN_IFACE
+  value: "enp7s0"
+- name: DASHBOARD_TS_IFACE
+  value: "tailscale0"
+- name: DASHBOARD_ZT_IFACE
+  value: "ztsjsl3deb"
+```
+
+An interface that does not exist is reported as an empty address, and the matching link on the service cards is disabled. `deploy.sh` warns about it but carries on.
+
+Optionally restrict the disk panel:
 
 ```yaml
 - name: DASHBOARD_DISKS
   value: "/, /home"   # comma-separated mount points or device names
 ```
 
-Everything else (LAN/ZT/TS IPs, server location, conntrack timeout) is filled in interactively by the deploy script.
-
-### 3. Run the deploy script
+### 3. Deploy
 
 ```bash
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-The script walks you through:
+The script:
 
-1. **Server location** — geolocates your public IP via ip-api.com (used to pin the server on the map). Accept the auto-detected city, enter coordinates manually, or keep current.
-2. **LAN IP** — auto-detected from `hostname -I`.
-3. **Tailscale IP** — auto-detected via `tailscale ip` or the `tailscale0` interface; can be left blank.
-4. **ZeroTier IP** — auto-detected via `zerotier-cli` or `zt*` interfaces; can be left blank.
-5. **Device-detection timeout** — how long a disconnected client stays visible. Sets `net.netfilter.nf_conntrack_tcp_timeout_established`, loads the `nf_conntrack` module if needed, and persists both across reboots.
-
-It then:
-
-1. Builds `homelab-backend:latest` and `homelab-frontend:latest` with Docker.
-2. Imports both into k3s containerd (`k3s ctr images import`) — no registry needed.
-3. Applies `00-namespace.yaml` → `03-frontend.yaml`.
-4. Restarts both Deployments and waits for rollout.
+1. Asks for the **server location** (it can look it up from your public IP through ip-api.com, or you enter coordinates). It is where the server and LAN peers are drawn.
+2. Checks that the three configured **interfaces** exist and warns if one does not.
+3. Asks for the **connection timeout**: how long a closed connection stays visible (`net.netfilter.nf_conntrack_tcp_timeout_established`).
+4. Turns on **conntrack byte accounting** (`net.netfilter.nf_conntrack_acct=1`), persisted in `/etc/sysctl.d/99-homelab-conntrack-acct.conf`, and makes sure the `nf_conntrack` module loads at boot so that setting applies.
+5. Builds `homelab-backend:latest` from `backend/` and `homelab-frontend:latest` from `frontend/`, imports both into k3s containerd, applies manifests `00` to `03` and waits for the rollout.
+6. Prints the dashboard URL and, on a first deployment, the one-time login.
 
 ### 4. Open the dashboard
 
@@ -109,72 +164,80 @@ It then:
 http://YOUR-SERVER-IP:30300
 ```
 
-To redeploy after a code or config change, just run `./deploy.sh` again.
+Run `./deploy.sh` again after any code or configuration change.
 
 ---
 
 ## Configuration Reference
 
-All backend config is environment variables in `02-backend.yaml`:
+Environment variables of the backend, in `02-backend.yaml`:
 
-| Env Var | Default | Description |
+| Variable | Value in the manifest | Description |
 |---|---|---|
-| `DASHBOARD_LAN_IP` | auto-detect (UDP probe to 8.8.8.8) | LAN IP used to build service URLs |
-| `DASHBOARD_ZT_IP` | *(empty)* | ZeroTier IP — empty greys out the ZT button |
-| `DASHBOARD_TS_IP` | *(empty)* | Tailscale IP — empty greys out the TS button |
-| `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names; empty = show all |
-| `DASHBOARD_SERVER_LAT` | `0` | Server latitude for the world map |
-| `DASHBOARD_SERVER_LNG` | `0` | Server longitude for the world map |
-| `HOST_PROC` / `HOST_SYS` / `HOST_ROOT` | `/host/proc` / `/host/sys` / `/host/root` | Where the host filesystems are mounted in the pod |
-| `SERVICES_FILE` | `/config/services.json` | Path to the manual-services JSON (mounted from ConfigMap) |
+| `DASHBOARD_LAN_IFACE` | `enp7s0` | Interface whose IPv4 address is the server's LAN address. Its subnet defines "LAN". |
+| `DASHBOARD_TS_IFACE` | `tailscale0` | Tailscale interface. |
+| `DASHBOARD_ZT_IFACE` | `ztsjsl3deb` | ZeroTier interface. Its subnet defines "ZeroTier". |
+| `DASHBOARD_DATA_DIR` | `/data` | Holds `auth.json` and the one-time password. Mounted from `/var/lib/homelab-dashboard` on the host. |
+| `DASHBOARD_SERVER_LAT` / `DASHBOARD_SERVER_LNG` | set by `deploy.sh` | Server position on the map. `0` / `0` means not set. |
+| `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names; empty shows all. |
+| `HOST_PROC` / `HOST_SYS` / `HOST_ROOT` | `/host/proc` / `/host/sys` / `/host/root` | Where the host filesystems are mounted in the pod. |
+| `SERVICES_FILE` | `/config/services.json` | Manual services, mounted from the ConfigMap. |
 
-LAN / ZT / TS IPs can also be overridden per-browser via the in-app **Settings** modal (saved to localStorage).
+Files in `/var/lib/homelab-dashboard` on the host (mounted at `/data`):
+
+| File | Purpose |
+|---|---|
+| `auth.json` | The account: scrypt hash and salt. Delete it to reset the password. |
+| `initial-admin-password` | The one-time password. Exists only until the first password change. |
+| `carto-api-key` | Optional. Your CARTO Basemaps API key for the map tiles, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key). |
+
+Per browser (localStorage): theme, groups, service overrides, manual map pins and, optionally, a server location that overrides the one from the manifest. Server addresses are never stored in the browser.
 
 ---
 
 ## Service Auto-Discovery
 
-The backend merges services from three sources on every `/api/services` poll:
+Sources are merged on every poll; discovery results are cached for 10 seconds. The first source to name a service wins.
 
 ### 1. Kubernetes Services
 
-Every Service in the cluster is considered, except those in `kube-system` / `kube-public` / `kube-node-lease` and the dashboard's own pods. Each is mapped to a URL:
+Every Service except those in `kube-system`, `kube-public`, `kube-node-lease` and the dashboard's own:
 
-- **NodePort** → `http://localhost:<nodePort>` (the frontend rewrites this against `LAN_IP` for display)
-- **LoadBalancer** → external IP/hostname + port
-- **ClusterIP + Ingress** → URL from the Ingress (standard `networking.k8s.io/v1` plus Traefik `IngressRoute` CRDs in groups `traefik.io` and `traefik.containo.us`)
-- **ClusterIP without Ingress** → skipped (internal only)
+- **NodePort** → `http://localhost:<nodePort>` (the cards link to it through the LAN / ZeroTier / Tailscale address)
+- **LoadBalancer** → external IP or hostname and port
+- **ClusterIP with an Ingress** → the Ingress URL (`networking.k8s.io/v1` and Traefik `IngressRoute`)
+- **ClusterIP without an Ingress** → skipped
 
-### 2. Docker Containers
+### 2. Docker containers
 
-Any running container with a published host port is detected via `/var/run/docker.sock`. Friendly names and icons come from a built-in keyword table that matches against the image name (Jellyfin, Sonarr, Pi-hole, Nextcloud, Home Assistant, etc. — see `KNOWN_IMAGES` in `main.py`).
+Running containers with a published host port, through `/var/run/docker.sock`. Names and icons come from a keyword table matched against the image name (`KNOWN_IMAGES` in `backend/app/services.py`).
 
-### 3. ConfigMap (manual)
+### 3. ConfigMap
 
-For services the backend can't see (running on a different host, bare-metal, etc.):
+For services the backend cannot see:
 
 ```bash
 sudo kubectl edit configmap homelab-services -n homelab
 ```
 
-Change takes effect on the next service poll — no pod restart needed.
+```json
+[{ "name": "NAS", "url": "http://192.168.0.20:5000", "port": 5000, "group": "Storage", "icon": "💾", "desc": "" }]
+```
 
-### Customizing services at the source
+### Labels and annotations
 
-Skip the per-browser overrides and label things directly in your infrastructure.
-
-**Docker (compose label):**
+**Docker:**
 ```yaml
 labels:
   homelab-dashboard.name: "Jellyfin"
   homelab-dashboard.icon: "📺"
   homelab-dashboard.desc: "Media server"
   homelab-dashboard.group: "Media"
-  homelab-dashboard.url: "http://media.lan:8096"   # optional override
-  homelab-dashboard.enabled: "false"               # hide from dashboard
+  homelab-dashboard.url: "http://media.lan:8096"
+  homelab-dashboard.enabled: "false"               # hide
 ```
 
-**Kubernetes (Service annotation):**
+**Kubernetes Service:**
 ```yaml
 annotations:
   homelab-dashboard/name: "Jellyfin"
@@ -185,69 +248,106 @@ annotations:
   homelab-dashboard/enabled: "false"
 ```
 
+A URL from any source is used only if it starts with `http://` or `https://`. Anything else is ignored: a label falls back to the discovered port, a ConfigMap entry is shown without a link.
+
+---
+
+## Network Map
+
+The backend runs `conntrack -L` for IPv4 and IPv6 (falling back to `/proc/net/nf_conntrack`) and keeps TCP flows in state `ESTABLISHED` and UDP flows marked `[ASSURED]`. Each flow is judged by its **original** direction:
+
+- from outside to this host, a pod or a container → **inbound**, the peer is the source
+- from this host, a pod or a container to outside → **outbound**, the peer is the destination
+- everything else (pod to pod, loopback, link-local, multicast, broadcast) is ignored
+
+Pods (`10.42.0.0/16`), cluster services (`10.43.0.0/16`) and the subnets of `docker0`, `br-*`, `cni*` and `flannel*` are internal: their addresses never appear as peers.
+
+| Type | Shape and colour | Rule |
+|---|---|---|
+| ZeroTier | square, orange | inside the subnet of `DASHBOARD_ZT_IFACE` |
+| Tailscale | diamond, violet | `100.64.0.0/10` or `fd7a:115c:a1e0::/48` |
+| LAN | circle, blue | inside the subnet of `DASHBOARD_LAN_IFACE`, or any other private range |
+| WAN | triangle, pink | everything else |
+
+Direction is shown by the line, never by colour alone: dots moving toward the server are inbound, dashes moving away are outbound, a solid line is both. The peer list repeats it as an arrow and a word. Line weight grows with bytes (log scale), or with the number of flows when byte accounting is off.
+
+### Where peers are drawn
+
+| Peer | On the map? |
+|---|---|
+| WAN | At the position ip-api.com returns for the address. Until it has answered: *geolocation pending*. |
+| LAN | At the server. All LAN peers share one **Local network · N** badge on the server marker; its popup lists them. |
+| Tailscale, direct connection | At the position of the peer's public endpoint, read from `tailscaled`. The peer's Tailscale hostname is shown. |
+| Tailscale, relayed | Not on map: *relayed, no direct endpoint*. |
+| ZeroTier | Not on map: *private address*. There is no reliable way to tie a ZeroTier address to a physical endpoint, so none is guessed. |
+
+Nothing is ever placed at an invented position.
+
+### Map tiles need a CARTO API key
+
+The basemap comes from CARTO (`dark_all` and `light_all`). **Since 25 September 2026 CARTO no longer serves these tiles without an API key**: a request without one gets a blank tile reading "API KEY REQUIRED" instead of the map. Markers, lines, popups and the peer list do not depend on the tiles and work either way.
+
+A key is free for personal use. Request one at <https://carto.com/basemaps/apikey> (it arrives by e-mail), then save it on the server, alone in this file:
+
+```bash
+sudo mkdir -p /var/lib/homelab-dashboard
+echo 'YOUR-KEY' | sudo tee /var/lib/homelab-dashboard/carto-api-key >/dev/null
+sudo chmod 600 /var/lib/homelab-dashboard/carto-api-key
+```
+
+No restart and no redeploy: the backend reads the file on every `/api/config` request, so open dashboards pick it up within a minute, or at once on reload. To change the key, overwrite the file; to stop using it, delete the file.
+
+- The key is kept **out of the repository and the manifests** on purpose. It is handed only to signed-in browsers (in `/api/config`, as `tile_key`), which add it to the tile URLs as `?key=...`. It is never written to the logs.
+- Paste the key exactly as issued. Keys are case-sensitive, and CARTO treats a wrong or incomplete key as no key: the notice stays and no error is shown. Your browser also caches tiles, so reload after adding a key.
+- Leave the key **without website restrictions**. CARTO checks restricted keys against the `Referer` header, and this dashboard sends `Referrer-Policy: no-referrer`, so a restricted key is refused ("Map tiles unavailable" then appears on the map).
+- CARTO's terms require the attribution and its notices to stay visible. Do not hide the notice with CSS.
+
+### Accuracy
+
+**Locations are IP-geolocation estimates: city-level at best. Mobile and VPN users appear at their carrier or VPN exit.** A marker shows roughly where an address is registered, not where a person is.
+
+### Privacy: ip-api.com
+
+To place WAN peers and direct Tailscale endpoints, their **IP addresses are sent to ip-api.com over unencrypted HTTP** (the free endpoint offers no HTTPS). At most 100 addresses per poll are looked up, the busiest peers first; results are cached for 24 hours (up to 5,000 entries) and the service's rate-limit headers are honoured. If you do not want addresses to leave your network, block `ip-api.com` for this host: WAN peers then stay listed as *geolocation pending* and everything else keeps working.
+
+### Byte counters
+
+Bytes per peer need `net.netfilter.nf_conntrack_acct=1`, which `deploy.sh` enables. Flows that already existed when it was switched on have no counters. Without accounting the list says so and ranks peers by flows.
+
+### Limits
+
+- At most 200 peers are returned, the busiest first; the list says when it is a subset.
+- Markers of peers in the same city overlap. Use the peer list: clicking a row pans to the marker and opens its popup.
+- The map follows the data until you pan or zoom; **Fit** turns that back on.
+- You can add **manual pins** under Settings (hollow markers). They are positions you chose, not measurements.
+- Polling: system 5 s, network 10 s, services 15 s, addresses 60 s.
+
 ---
 
 ## Editing Services in the UI
 
-- **Pencil icon** on a card → override name, icon, description (saved to localStorage; "Reset to Default" removes overrides).
-- **Grouped view** (header toggle) → drag-and-drop cards between groups, double-click to rename a group, **+ Group** to create one.
-- The flat view is the default; switch to grouped only when you actually want to organize.
-
----
-
-## World Map & Connected Devices
-
-Below the services section the dashboard renders a Leaflet map alongside a list of currently connected clients.
-
-The backend runs `conntrack -L -p tcp --state ESTABLISHED` (the CLI is installed in the image) and parses the result. Falls back to `/proc/net/nf_conntrack` if the CLI isn't usable — both are reachable thanks to `privileged: true` and `hostNetwork: true`. Pod-to-pod (10.42.0.0/16) and ClusterIP (10.43.0.0/16) traffic is filtered out so only real clients show up.
-
-| Type | Pin colour | How detected |
-|---|---|---|
-| LAN | Blue | RFC1918 private IP |
-| Tailscale | Purple | CGNAT range `100.64.0.0/10` |
-| ZeroTier | Orange | `10.147.0.0/16` (default ZT range) |
-| WAN | Orange | Public IP — geolocated via ip-api.com batch endpoint |
-| Server | Green | Your configured `DASHBOARD_SERVER_LAT/LNG` |
-
-Geolocation results are cached in-process for 5 minutes. WAN devices are pinned at their geo-coordinates; LAN/TS/ZT devices appear near the server (private IPs can't be located). The device list shows IP, type, total connections, and which of your services they're hitting (matched by destination port).
-
-Polling: system every 5s, services every 15s, devices every 10s.
-
-You can also add **manual devices** via Settings → Connected Devices (lat, lng, type) — useful for pinning known machines that aren't actively connected.
-
-### Adjusting the timeout later
-
-The deploy script handles this, but to change it without redeploying:
-
-```bash
-sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300   # 5 min
-```
+- **Pencil** on a card: name, icon, description and group (saved in the browser; "Reset to default" removes the override).
+- **Grouped** view: drag cards between groups, rename or delete a group with the buttons next to its title (or double-click the title), **+ Group** to add one.
 
 ---
 
 ## Multi-Network Access
 
-Each service card shows three buttons (LAN / ZeroTier / Tailscale). Buttons are always rendered; ones whose IP you haven't configured are greyed out with a tooltip pointing to Settings.
-
-| Button | When active | URL pattern |
+| Link | Active when | URL |
 |---|---|---|
-| LAN | `DASHBOARD_LAN_IP` set | `http://<LAN_IP>:<port>` |
-| ZeroTier | `DASHBOARD_ZT_IP` set | `http://<ZT_IP>:<port>` |
-| Tailscale | `DASHBOARD_TS_IP` set | `http://<TS_IP>:<port>` |
-
-Server-side defaults live in `02-backend.yaml`; per-browser overrides live in localStorage (Settings modal).
+| LAN | the LAN interface has an IPv4 address | `http://<LAN address>:<port>` |
+| ZeroTier | the ZeroTier interface has one and the service has a host port | `http://<ZeroTier address>:<port>` |
+| Tailscale | the Tailscale interface has one and the service has a host port | `http://<Tailscale address>:<port>` |
 
 ---
 
 ## Optional: Traefik Ingress (port 80)
 
-k3s ships with Traefik, so you can drop the `:30300` port:
-
 ```bash
 sudo kubectl apply -f 04-ingress.yaml
 ```
 
-By default it matches any host on port 80. To use a hostname, edit the `host:` field in `04-ingress.yaml` and add an entry to your local DNS / `/etc/hosts`.
+It matches any host on port 80 by default. This is still plain HTTP: the same rule applies, keep it off the internet.
 
 ---
 
@@ -255,15 +355,35 @@ By default it matches any host on port 80. To use a hostname, edit the `host:` f
 
 | Setting | Why |
 |---|---|
-| `hostNetwork: true` | psutil reads real host network interfaces for I/O stats; conntrack sees the host's tracking table |
-| `hostPID: true` | `/proc/1/mounts` resolves to the host init process, giving real host filesystems |
-| `/proc` → `/host/proc` | Real CPU, RAM, uptime, network counters |
-| `/sys` → `/host/sys` | CPU temperature sensors (`hwmon`, `thermal_zone*`) |
-| `/` → `/host/root` | Real disk usage via `psutil.disk_usage` |
-| `/var/run/docker.sock` mounted | Container auto-discovery |
-| `privileged: true` | Required to read host `/proc` & `/sys` and to run `conntrack` |
+| `hostNetwork: true` | real interface addresses and I/O counters; conntrack sees the host's table |
+| `hostPID: true` | `/proc/1/mounts` is the host's mount table |
+| `/proc`, `/sys`, `/` mounted | CPU, RAM, temperature, disk usage; the Tailscale socket under `/run` |
+| `/var/run/docker.sock` | container discovery |
+| `/var/lib/homelab-dashboard` → `/data` | the account file survives pod restarts |
+| `privileged: true` | reading host `/proc` and `/sys`, running `conntrack` |
 
-This is why the dashboard is intended for a private homelab, not a multi-tenant cluster.
+A consequence of `hostNetwork` is that the API listens on the host's port 8000. That is why authentication is enforced in the backend and not in nginx.
+
+---
+
+## Development
+
+```bash
+# Backend tests
+cd backend
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+
+# Backend, locally
+DASHBOARD_DATA_DIR=./data uvicorn app.main:create_app --factory --port 8000
+
+# Frontend (the dev server proxies /api to 127.0.0.1:8000)
+cd frontend
+npm ci
+npm run dev
+npm run build
+```
 
 ---
 
@@ -272,12 +392,14 @@ This is why the dashboard is intended for a private homelab, not a multi-tenant 
 | What | Command |
 |---|---|
 | Pod status | `sudo kubectl get pods -n homelab` |
-| Backend logs | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
+| Backend logs (logins are logged, never secrets) | `sudo kubectl logs -n homelab deploy/homelab-backend -f` |
 | Frontend logs | `sudo kubectl logs -n homelab deploy/homelab-frontend -f` |
-| All k8s services | `sudo kubectl get svc -A` |
+| One-time password | `sudo cat /var/lib/homelab-dashboard/initial-admin-password` |
+| Set the map tile key | `echo 'YOUR-KEY' \| sudo tee /var/lib/homelab-dashboard/carto-api-key >/dev/null` |
 | Edit manual services | `sudo kubectl edit configmap homelab-services -n homelab` |
-| Running containers | `docker ps` |
-| Tear everything down | `sudo kubectl delete namespace homelab` |
+| Is byte accounting on? | `sysctl net.netfilter.nf_conntrack_acct` |
+| Change the connection timeout | `sudo sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=300` |
+| Tear everything down | `sudo kubectl delete namespace homelab` (the account file stays in `/var/lib/homelab-dashboard`) |
 
 ---
 
@@ -285,33 +407,44 @@ This is why the dashboard is intended for a private homelab, not a multi-tenant 
 
 ```
 homelab_dashboard/
-├── main.py                                      # Backend API (FastAPI + psutil)
-├── Dockerfile                                   # Backend image (python:3.12-slim + conntrack)
-├── requirements.txt                             # fastapi, uvicorn, psutil, httpx, kubernetes
-├── package.json                                 # Frontend React deps
-├── src/App.js                                   # Frontend UI (cards, drag-drop, settings, map)
-├── src/App.css                                  # Theming + animations
-├── src/index.js                                 # React entry point
-├── public/index.html                            # HTML template
-├── nginx.conf                                   # Frontend nginx (serves SPA + proxies /api/*)
-├── mnt/user-data/outputs/homelab-k3s/frontend/
-│   └── Dockerfile                               # Frontend multi-stage build (node → nginx)
-├── deploy.sh                                    # Interactive build + import + apply + rollout
-├── services.json                                # Local-dev fallback for manual services
-├── 00-namespace.yaml                            # `homelab` Namespace
-├── 01-configmap.yaml                            # Manual services (mounted at /config)
-├── 02-backend.yaml                              # ServiceAccount + ClusterRole + Deployment + Service + env vars
-├── 03-frontend.yaml                             # Frontend Deployment + NodePort :30300
-└── 04-ingress.yaml                              # Optional Traefik Ingress on port 80
+├── backend/
+│   ├── app/
+│   │   ├── main.py            # app factory and routes
+│   │   ├── auth.py            # account, sessions, throttle, request checks
+│   │   ├── system.py          # host metrics, interface addresses
+│   │   ├── services.py        # discovery and health checks
+│   │   ├── network.py         # conntrack parsing, classification, Tailscale
+│   │   └── geo.py             # ip-api.com lookups and cache
+│   ├── tests/                 # pytest suite and conntrack fixtures
+│   ├── requirements.txt       # pinned runtime dependencies
+│   ├── requirements-dev.txt   # + pytest
+│   ├── services.json          # fallback for manual services
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── components/        # one React component per file
+│   │   ├── hooks/             # polling, theme
+│   │   ├── styles/            # tokens, base, dashboard, network
+│   │   └── assets/fonts/      # JetBrainsMono Nerd Font + OFL.txt
+│   ├── package.json, package-lock.json, vite.config.js, index.html
+│   ├── nginx.conf             # static files, /api proxy, security headers
+│   └── Dockerfile             # node build stage → unprivileged nginx
+├── deploy.sh                  # interactive build + import + apply + rollout
+├── 00-namespace.yaml
+├── 01-configmap.yaml          # manual services
+├── 02-backend.yaml            # ServiceAccount, RBAC, Deployment, Service, env
+├── 03-frontend.yaml           # Deployment (non-root, read-only) + NodePort :30300
+└── 04-ingress.yaml            # optional Traefik Ingress on port 80
 ```
 
 ---
 
 ## Notes & Gotchas
 
-- **Temperature** shows "Not available" when the host has no readable sensor (no `lm-sensors`, no `thermal_zone*`).
-- **Disk panel** reads `/host/proc/1/mounts` to bypass the container mount namespace; without `hostPID: true` you'd see the container's view instead of the host's.
-- **Multi-node clusters** — the backend must run on the node whose hardware you care about. Add a `nodeSelector` or `nodeName` in `02-backend.yaml`.
-- **Frontend image rebuild** — the build context is the repo root, so any change under `src/` or `public/` requires a redeploy.
-- **localStorage** is the source of truth for per-browser customizations (theme, group layout, service overrides, manual devices, IP overrides). Clearing it returns the dashboard to its server-side defaults.
-- **Rolling update strategy** for the backend is `Recreate` — `hostNetwork: true` means two pods would otherwise fight over port 8000.
+- **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a valid key. Put your key in `/var/lib/homelab-dashboard/carto-api-key`, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
+- **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
+- **Temperature** shows "n/a" when the host has no readable sensor.
+- **Self-signed HTTPS services** are reported offline: the health check verifies certificates.
+- **Multi-node clusters**: the backend must run on the node whose hardware you care about. Add a `nodeSelector` in `02-backend.yaml`.
+- **Clearing localStorage** resets theme, groups, overrides, manual pins and the browser's own server location. It does not sign you out.
+- **Recreate** is the backend's update strategy because two `hostNetwork` pods cannot both bind port 8000.

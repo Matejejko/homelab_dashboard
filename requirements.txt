@@ -1,5 +1,0 @@
-fastapi
-uvicorn[standard]
-psutil
-httpx
-kubernetes

@@ -1,0 +1,10 @@
+tcp      6 431999 ESTABLISHED src=2001:db8:ffff::9 dst=2001:db8:a::10 sport=51000 dport=30300 packets=10 bytes=2000 src=2001:db8:a::10 dst=2001:db8:ffff::9 sport=30300 dport=51000 packets=9 bytes=7000 [ASSURED] mark=0 use=1
+udp      17 170 src=2001:db8:a::10 dst=2001:db8:ffff::53 sport=45000 dport=53 packets=2 bytes=200 src=2001:db8:ffff::53 dst=2001:db8:a::10 sport=53 dport=45000 packets=2 bytes=400 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=2001:db8:a::50 dst=2001:db8:a::10 sport=52000 dport=8096 packets=5 bytes=500 src=2001:db8:a::10 dst=2001:db8:a::50 sport=8096 dport=52000 packets=5 bytes=900 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=fd7a:115c:a1e0::5 dst=fd7a:115c:a1e0::1 sport=53000 dport=22 packets=3 bytes=300 src=fd7a:115c:a1e0::1 dst=fd7a:115c:a1e0::5 sport=22 dport=53000 packets=3 bytes=600 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=fd00:1::5 dst=2001:db8:a::10 sport=53001 dport=22 packets=3 bytes=300 src=2001:db8:a::10 dst=fd00:1::5 sport=22 dport=53001 packets=3 bytes=600 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=fe80::aa dst=fe80::1 sport=54000 dport=22 packets=3 bytes=300 src=fe80::1 dst=fe80::aa sport=22 dport=54000 packets=3 bytes=600 [ASSURED] mark=0 use=1
+udp      17 170 src=2001:db8:a::10 dst=ff02::fb sport=5353 dport=5353 packets=4 bytes=280 src=ff02::fb dst=2001:db8:a::10 sport=5353 dport=5353 packets=4 bytes=280 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=2001:db8:d::2 dst=2001:db8:ffff::200 sport=42000 dport=443 packets=7 bytes=900 src=2001:db8:ffff::200 dst=2001:db8:d::2 sport=443 dport=42000 packets=6 bytes=12000 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=::1 dst=::1 sport=44000 dport=6443 packets=3 bytes=300 src=::1 dst=::1 sport=6443 dport=44000 packets=3 bytes=300 [ASSURED] mark=0 use=1
+udp      17 20 src=2001:db8:ffff::54 dst=2001:db8:a::10 sport=45002 dport=51820 packets=3 bytes=300 [UNREPLIED] src=2001:db8:a::10 dst=2001:db8:ffff::54 sport=51820 dport=45002 packets=0 bytes=0 mark=0 use=1

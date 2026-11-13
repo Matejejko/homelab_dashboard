@@ -1,0 +1,24 @@
+tcp      6 431997 ESTABLISHED src=203.0.113.9 dst=192.0.2.10 sport=51000 dport=30300 packets=120 bytes=9000 src=10.42.0.15 dst=10.42.0.1 sport=3000 dport=38412 packets=110 bytes=250000 [ASSURED] mark=0 use=1
+tcp      6 431990 ESTABLISHED src=203.0.113.9 dst=192.0.2.10 sport=51001 dport=30300 packets=10 bytes=1000 src=10.42.0.15 dst=10.42.0.1 sport=3000 dport=38413 packets=9 bytes=5000 [ASSURED] mark=0 use=1
+tcp      6 300 ESTABLISHED src=192.0.2.10 dst=203.0.113.9 sport=40000 dport=443 packets=5 bytes=700 src=203.0.113.9 dst=192.0.2.10 sport=443 dport=40000 packets=4 bytes=3300 [ASSURED] mark=0 use=1
+tcp      6 431000 ESTABLISHED src=192.0.2.50 dst=192.0.2.10 sport=52000 dport=8096 packets=50 bytes=4000 src=192.0.2.10 dst=192.0.2.50 sport=8096 dport=52000 packets=60 bytes=800000 [ASSURED] mark=0 use=1
+udp      17 170 src=192.0.2.10 dst=192.0.2.1 sport=45000 dport=53 packets=4 bytes=280 src=192.0.2.1 dst=192.0.2.10 sport=53 dport=45000 packets=4 bytes=600 [ASSURED] mark=0 use=1
+udp      17 25 src=192.0.2.10 dst=203.0.113.53 sport=45001 dport=53 packets=1 bytes=70 [UNREPLIED] src=203.0.113.53 dst=192.0.2.10 sport=53 dport=45001 packets=0 bytes=0 mark=0 use=1
+udp      17 25 src=203.0.113.54 dst=192.0.2.10 sport=45002 dport=51820 packets=3 bytes=300 src=192.0.2.10 dst=203.0.113.54 sport=51820 dport=45002 packets=2 bytes=200 mark=0 use=1
+tcp      6 110 SYN_SENT src=192.0.2.10 dst=203.0.113.77 sport=40001 dport=22 packets=1 bytes=60 [UNREPLIED] src=203.0.113.77 dst=192.0.2.10 sport=22 dport=40001 packets=0 bytes=0 mark=0 use=1
+tcp      6 60 TIME_WAIT src=203.0.113.78 dst=192.0.2.10 sport=40002 dport=80 packets=6 bytes=600 src=192.0.2.10 dst=203.0.113.78 sport=80 dport=40002 packets=5 bytes=900 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=100.64.0.5 dst=100.64.0.1 sport=53000 dport=22 packets=30 bytes=3000 src=100.64.0.1 dst=100.64.0.5 sport=22 dport=53000 packets=28 bytes=6000 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=198.51.100.20 dst=198.51.100.1 sport=54000 dport=30300 packets=12 bytes=1200 src=10.42.0.15 dst=10.42.0.1 sport=3000 dport=54000 packets=11 bytes=40000 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=10.9.8.7 dst=192.0.2.10 sport=55000 dport=22 packets=4 bytes=400 src=192.0.2.10 dst=10.9.8.7 sport=22 dport=55000 packets=4 bytes=800 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=10.42.0.15 dst=10.42.0.16 sport=41000 dport=8000 packets=3 bytes=300 src=10.42.0.16 dst=10.42.0.15 sport=8000 dport=41000 packets=3 bytes=300 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=10.42.0.15 dst=10.43.0.1 sport=41001 dport=443 packets=3 bytes=300 src=192.0.2.10 dst=10.42.0.15 sport=6443 dport=41001 packets=3 bytes=300 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=198.51.100.130 dst=203.0.113.200 sport=42000 dport=443 packets=7 bytes=900 src=203.0.113.200 dst=192.0.2.10 sport=443 dport=42000 packets=6 bytes=12000 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=10.42.0.20 dst=203.0.113.201 sport=42001 dport=443 packets=7 bytes=500 src=203.0.113.201 dst=192.0.2.10 sport=443 dport=42001 packets=6 bytes=2000 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=192.0.2.10 dst=198.51.100.130 sport=43000 dport=8080 packets=3 bytes=200 src=198.51.100.130 dst=192.0.2.10 sport=8080 dport=43000 packets=3 bytes=400 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=198.51.100.130 dst=198.51.100.194 sport=43001 dport=5432 packets=3 bytes=200 src=198.51.100.194 dst=198.51.100.130 sport=5432 dport=43001 packets=3 bytes=400 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=127.0.0.1 dst=127.0.0.1 sport=44000 dport=6443 packets=3 bytes=300 src=127.0.0.1 dst=127.0.0.1 sport=6443 dport=44000 packets=3 bytes=300 [ASSURED] mark=0 use=1
+udp      17 170 src=192.0.2.10 dst=224.0.0.251 sport=5353 dport=5353 packets=4 bytes=280 src=224.0.0.251 dst=192.0.2.10 sport=5353 dport=5353 packets=4 bytes=600 [ASSURED] mark=0 use=1
+udp      17 170 src=192.0.2.10 dst=192.0.2.255 sport=137 dport=137 packets=4 bytes=280 src=192.0.2.255 dst=192.0.2.10 sport=137 dport=137 packets=4 bytes=600 [ASSURED] mark=0 use=1
+udp      17 170 src=192.0.2.10 dst=169.254.169.254 sport=46000 dport=123 packets=4 bytes=280 src=169.254.169.254 dst=192.0.2.10 sport=123 dport=46000 packets=4 bytes=600 [ASSURED] mark=0 use=1
+tcp      6 431999 ESTABLISHED src=203.0.113.99 dst=203.0.113.100 sport=47000 dport=443 packets=3 bytes=300 src=203.0.113.100 dst=203.0.113.99 sport=443 dport=47000 packets=3 bytes=300 [ASSURED] mark=0 use=1
+icmp     1 29 src=203.0.113.9 dst=192.0.2.10 type=8 code=0 id=1 packets=1 bytes=84 src=192.0.2.10 dst=203.0.113.9 type=0 code=0 id=1 packets=1 bytes=84 mark=0 use=1
