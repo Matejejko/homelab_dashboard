@@ -297,7 +297,7 @@ Direction is shown by the line, never by colour alone: dots moving toward the se
 |---|---|
 | WAN | At the position ip-api.com returns for the address. Until it has answered: *geolocation pending*. |
 | LAN | At the server. All LAN peers share one **Local network · N** badge on the server marker; its popup lists them. |
-| Tailscale, direct connection | At the position of the peer's public endpoint, read from `tailscaled`. The peer's Tailscale hostname is shown. |
+| Tailscale, direct connection | At the position of the peer's public endpoint, read from `tailscaled`. The peer is shown under its Tailscale machine name (the MagicDNS name, as `tailscale status` prints it), not under what the device calls itself: an Android phone reports `localhost`. |
 | Tailscale, relayed | Not on map: *relayed, no direct endpoint*. |
 | ZeroTier | Not on map: *private address*. There is no reliable way to tie a ZeroTier address to a physical endpoint, so none is guessed. |
 
@@ -325,6 +325,10 @@ No restart and no redeploy: the backend reads the file on every `/api/config` re
 ### Accuracy
 
 **Locations are IP-geolocation estimates: city-level at best. Mobile and VPN users appear at their carrier or VPN exit.** A marker shows roughly where an address is registered, not where a person is.
+
+Anycast addresses are the worst case. Public DNS resolvers and much of the large CDNs answer from many places at once under one address, and such an address is drawn at the single place it is registered: `1.1.1.1` is drawn in Brisbane wherever your server is. A long line to another continent can be a connection to a machine in the next city.
+
+*geolocation pending* should clear within a poll or two (the dashboard asks every ten seconds, and 100 addresses are looked up per poll). If it stays, the server cannot reach ip-api.com on port 80. Check from the server with `curl -s http://ip-api.com/json/1.1.1.1` and look for `geolocation request` warnings in `sudo kubectl logs -n homelab deploy/homelab-backend`.
 
 ### Privacy: ip-api.com
 

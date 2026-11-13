@@ -64,8 +64,11 @@ class GeoLocator:
         self._cache: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
         self._blocked_until = 0.0
 
-    def __len__(self) -> int:
-        return len(self._cache)
+    # No __len__ on purpose: Python treats an object whose __len__ is 0 as
+    # false, and a locator with an empty cache must still pass `if locator`.
+    def cache_size(self) -> int:
+        with self._lock:
+            return len(self._cache)
 
     def _cached(self, ip: str, now: float):
         """Return (hit, location)."""

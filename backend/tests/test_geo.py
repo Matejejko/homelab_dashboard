@@ -1,5 +1,7 @@
 from app import geo
 
+from .conftest import FakeApi
+
 
 class Clock:
     def __init__(self, now=1_000_000.0):
@@ -7,34 +9,6 @@ class Clock:
 
     def __call__(self):
         return self.now
-
-
-class FakeApi:
-    """ip-api.com batch endpoint double."""
-
-    def __init__(self, status=200, headers=None, fail=()):
-        self.calls = []
-        self.status = status
-        self.headers = headers if headers is not None else {"X-Rl": "14", "X-Ttl": "60"}
-        self.fail = set(fail)
-        self.error = None
-
-    def __call__(self, ips):
-        self.calls.append(list(ips))
-        if self.error:
-            raise self.error
-        if self.status != 200:
-            return self.status, self.headers, []
-        body = []
-        for address in ips:
-            if address in self.fail:
-                body.append({"status": "fail", "message": "reserved range", "query": address})
-            else:
-                body.append({
-                    "status": "success", "query": address,
-                    "lat": 50.0, "lon": 14.0, "city": "Prague", "country": "Czechia",
-                })
-        return 200, self.headers, body
 
 
 def test_resolves_and_caches():
@@ -130,7 +104,7 @@ def test_cache_is_bounded_to_5000_entries():
     for block in range(52):
         locator.resolve([f"2001:db8:ffff:{block:x}::{host:x}" for host in range(1, 101)])
     assert len(api.calls) == 52
-    assert len(locator) == geo.CACHE_MAX == 5000
+    assert locator.cache_size() == geo.CACHE_MAX == 5000
 
     # The oldest entries were evicted, the newest kept.
     assert locator.resolve(["2001:db8:ffff:33::1"]) != {"2001:db8:ffff:33::1": geo.PENDING}
@@ -165,3 +139,12 @@ def test_unanswered_and_malformed_entries_become_failures_not_retries():
     assert result == {"203.0.113.1": geo.FAILED, "203.0.113.2": geo.FAILED}
     locator.resolve(["203.0.113.1", "203.0.113.2"])
     assert len(calls) == 1
+
+
+def test_an_empty_locator_is_still_truthy():
+    # `if locator:` on a fresh instance must not skip the lookup. It did once:
+    # a __len__ that returned the (empty) cache size made the object falsy, and
+    # nothing was ever geolocated.
+    locator = geo.GeoLocator(fetch=FakeApi(), clock=Clock())
+    assert locator.cache_size() == 0
+    assert bool(locator) is True
