@@ -109,7 +109,7 @@ spec:
               value: ""
             # The server location for the map is NOT set here. deploy.sh stores
             # it on the host in /var/lib/homelab-dashboard/server-location, so
-            # this file stays the same for everyone and holds nothing personal.
+            # it cannot end up in a commit.
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here
