@@ -613,5 +613,11 @@ def test_tile_key_is_served_only_to_a_signed_in_session(app, ready, data_dir):
     assert "Example-Key_123" not in anonymous.text
 
 
+def test_per_request_http_client_logging_is_off(app):
+    """One INFO line per health check buried the login lines and printed service URLs."""
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+
+
 def test_old_devices_endpoint_is_gone(ready):
     assert ready.get("/api/devices").status_code == 404

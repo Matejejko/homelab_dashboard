@@ -20,6 +20,10 @@ from . import auth, network, services, system
 def create_app() -> FastAPI:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # httpx logs one line per request at INFO: every health check, every poll.
+    # That buries the lines that matter (logins) and prints service URLs.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # No interactive docs and no schema: they describe the API to anyone who asks.
     app = FastAPI(title="Homelab Dashboard API", docs_url=None, redoc_url=None, openapi_url=None)
