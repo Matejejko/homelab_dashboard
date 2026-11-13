@@ -24,7 +24,7 @@ Browser → NodePort :30300 → frontend (unprivileged nginx + React)
 
 - **Host metrics**: CPU, RAM, temperature, uptime, network throughput and disk usage per real filesystem, read from the host's `/proc` and `/sys`.
 - **Service auto-discovery** from Kubernetes Services (NodePort, LoadBalancer, Ingress, Traefik `IngressRoute`), Docker containers with published ports, and an optional ConfigMap.
-- **Health checks**: every service is requested over HTTP. Any answer below 500 is "online"; a 5xx or no answer is "offline".
+- **Health checks** that fit the service: web pages are requested over HTTP, game servers and other non-web services are checked on their TCP or UDP port. See [How "online" is decided](#how-online-is-decided).
 - **Network map**: peers from the kernel's conntrack table (TCP and UDP, IPv4 and IPv6, inbound and outbound), classified as LAN / Tailscale / ZeroTier / WAN, with byte counters when the kernel provides them.
 - **Honest locations**: a peer is drawn only where real data puts it. Everything else is listed as "not on map" with the reason.
 - **Multi-network links**: each service card links to the server's LAN, ZeroTier and Tailscale address. The addresses are read live from the network interfaces.
@@ -223,6 +223,25 @@ sudo kubectl edit configmap homelab-services -n homelab
 ```json
 [{ "name": "NAS", "url": "http://192.168.0.20:5000", "port": 5000, "group": "Storage", "icon": "💾", "desc": "" }]
 ```
+
+### How "online" is decided
+
+An HTTP request is the wrong question for a Minecraft or Valheim server, so the check depends on what the dashboard knows about the service:
+
+| Service | Check | Online when |
+|---|---|---|
+| **Web URL**: behind an Ingress or IngressRoute, or a URL from an annotation, label or the ConfigMap | HTTP GET | it answers with a status below 500 |
+| **TCP port**: NodePort, LoadBalancer or published container port | TCP connect, then one HTTP request to see whether it is a web page | the port accepts the connection (and, if it does speak HTTP, the status is below 500) |
+| **UDP port**: same sources, when the Service or container declares UDP | two one-byte datagrams | the port does not refuse them |
+
+Things worth knowing:
+
+- **TCP or UDP comes from the Service itself** (`spec.ports[0].protocol`), or from Docker's port type. The first port is the one shown and checked.
+- **UDP has no handshake.** A healthy game server silently ignores packets it does not understand, so silence counts as online. A stopped one is refused (ICMP port unreachable, which is also what kube-proxy sends for a Service with no ready pod), and that counts as offline. UDP services therefore show no latency.
+- **Certificates are not verified.** A service with a self-signed certificate is up, whatever a browser thinks of its certificate. The check sends nothing secret.
+- **A port that accepts and hangs up at once is offline.** That is what a forwarder does when nothing is behind it.
+- A TCP port that turned out not to speak HTTP is remembered for ten minutes, so a game server is not sent an HTTP request on every poll.
+- For a service shown as a web URL, an open port is not enough: it has to answer HTTP. If a real web UI is wrongly treated as a bare port (or the other way round), set `homelab-dashboard/url` on the Service to say which it is.
 
 ### Labels and annotations
 
@@ -444,7 +463,7 @@ homelab_dashboard/
 - **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a valid key. Put your key in `/var/lib/homelab-dashboard/carto-api-key`, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
 - **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
 - **Temperature** shows "n/a" when the host has no readable sensor.
-- **Self-signed HTTPS services** are reported offline: the health check verifies certificates.
+- **A UDP service shows "online" without a latency.** That is expected, see [How "online" is decided](#how-online-is-decided).
 - **Multi-node clusters**: the backend must run on the node whose hardware you care about. Add a `nodeSelector` in `02-backend.yaml`.
 - **Clearing localStorage** resets theme, groups, overrides, manual pins and the browser's own server location. It does not sign you out.
 - **Recreate** is the backend's update strategy because two `hostNetwork` pods cannot both bind port 8000.

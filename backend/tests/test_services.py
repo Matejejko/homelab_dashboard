@@ -58,7 +58,10 @@ def test_docker_label_url_with_a_bad_scheme_is_not_used():
         ("Jellyfin", "https://media.example.com", 8096),
     ]
     for svc in found:
-        assert set(svc) == {"name", "desc", "url", "port", "group", "icon"}
+        assert {key for key in svc if not key.startswith("_")} == {"name", "desc", "url", "port", "group", "icon"}
+    # The port-derived entry carries a probe; the one with a real web URL does not.
+    assert found[0]["_probe"]["port"] == 8080 and found[0]["_probe"]["proto"] == "tcp"
+    assert "_probe" not in found[1]
 
 
 def test_file_services_are_validated(tmp_path):
