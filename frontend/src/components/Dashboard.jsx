@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMetricHistory } from '../hooks/useMetricHistory.js';
 import { usePolling } from '../hooks/usePolling.js';
 import { hasLocation, loadLayout, saveLayout } from '../storage.js';
 import Header from './Header.jsx';
@@ -14,7 +15,9 @@ const NO_SERVICES = [];
 // Mounted only for a signed-in user past the password change, so nothing here
 // polls before the dashboard is on screen, and everything stops on sign-out.
 export default function Dashboard({ theme, onToggleTheme, onLogout }) {
-  const system = usePolling('/api/system', 5000);
+  // The request itself samples for a second, so this is a point about every 3 s.
+  const system = usePolling('/api/system', 2000);
+  const history = useMetricHistory(system.data);
   const servicesPoll = usePolling('/api/services', 15000);
   const network = usePolling('/api/network', 10000);
   const config = usePolling('/api/config', 60000);
@@ -143,7 +146,7 @@ export default function Dashboard({ theme, onToggleTheme, onLogout }) {
 
       <main>
         {system.error && <p className="notice notice--bad" role="alert">System API: {system.error}</p>}
-        <StatStrip system={system.data} error={system.error} />
+        <StatStrip system={system.data} history={history} error={system.error} />
 
         <NetworkSection
           network={network.data}

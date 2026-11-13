@@ -18,7 +18,11 @@ logger = logging.getLogger("homelab.services")
 _ANN = "homelab-dashboard"
 _DOCKER_SOCK = "/var/run/docker.sock"
 DISCOVERY_TTL = 10.0       # seconds
-HEALTH_TIMEOUT = 2.5       # seconds
+HEALTH_TIMEOUT = 2.5       # seconds, one HTTP request
+CONNECT_TIMEOUT = 1.5      # seconds, one TCP connect
+SETTLE = 0.2               # seconds an accepted connection must stay open
+UDP_WAIT = 0.8             # seconds to wait for a UDP refusal or reply
+PLAIN_TCP_TTL = 600.0      # seconds a port is remembered as "TCP, but not HTTP"
 
 # Keyword found in an image or service name -> display name and icon.
 # Only used for pretty names; it never adds services that were not discovered.
@@ -135,17 +139,42 @@ def _fallback_host() -> str:
     return system.iface_ipv4(system.lan_iface()) or "localhost"
 
 
+def _node_host() -> str:
+    """Where to probe a port published on this node.
+
+    The LAN address rather than loopback: NodePorts are always served there,
+    and Docker forwards it with plain NAT, while its loopback side is a
+    userland proxy that accepts connections even for a dead container.
+    """
+    return system.iface_ipv4(system.lan_iface()) or "127.0.0.1"
+
+
 # ─── Kubernetes ──────────────────────────────────────────────────────────────
 
-def _ingress_urls(net_api, custom_api, fallback_host: str) -> dict[str, str]:
-    """Map "namespace/service" to the URL its Ingress or IngressRoute serves."""
-    urls: dict[str, str] = {}
+def _published_address(status) -> str | None:
+    """First load-balancer address in an Ingress or Service status, if any."""
+    balancer = getattr(status, "load_balancer", None) if status else None
+    items = (getattr(balancer, "ingress", None) or []) if balancer else []
+    if not items:
+        return None
+    return getattr(items[0], "ip", None) or getattr(items[0], "hostname", None) or None
+
+
+def _ingress_urls(net_api, custom_api, fallback_host: str) -> dict[str, dict]:
+    """Map "namespace/service" to {"url", "address"} from its Ingress or IngressRoute.
+
+    "address" is where Kubernetes says the Ingress is published (None when it
+    does not say). The health check goes there directly, so it does not depend
+    on the Ingress host name resolving from this node.
+    """
+    urls: dict[str, dict] = {}
     try:
         for ing in net_api.list_ingress_for_all_namespaces(timeout_seconds=5).items:
             ann = ing.metadata.annotations or {}
             if ann.get(f"{_ANN}/enabled") == "false":
                 continue
             scheme = "https" if ing.spec.tls else "http"
+            address = _published_address(getattr(ing, "status", None))
             for rule in (ing.spec.rules or []):
                 host = rule.host or fallback_host
                 for hp in (rule.http.paths if rule.http else []):
@@ -156,7 +185,9 @@ def _ingress_urls(net_api, custom_api, fallback_host: str) -> dict[str, str]:
                     path = ""
                     if hp.path and hp.path not in ("/", "/*"):
                         path = hp.path.rstrip("/*")
-                    urls[f"{ing.metadata.namespace}/{svc_name}"] = f"{scheme}://{host}{path}"
+                    urls[f"{ing.metadata.namespace}/{svc_name}"] = {
+                        "url": f"{scheme}://{host}{path}", "address": address,
+                    }
     except Exception as exc:
         logger.debug("ingress list failed: %s", exc)
 
@@ -181,7 +212,8 @@ def _ingress_urls(net_api, custom_api, fallback_host: str) -> dict[str, str]:
                     for svc_ref in r.get("services", []):
                         svc_name = svc_ref.get("name")
                         if svc_name and host:
-                            urls.setdefault(f"{ns}/{svc_name}", f"{scheme}://{host}")
+                            # An IngressRoute carries no address of its own.
+                            urls.setdefault(f"{ns}/{svc_name}", {"url": f"{scheme}://{host}", "address": None})
             except (KeyError, IndexError, AttributeError, TypeError):
                 continue
     return urls
@@ -209,53 +241,80 @@ def _services_from_k8s() -> list[dict]:
 
     results: list[dict] = []
     for svc in all_svcs.items:
-        ns = svc.metadata.namespace
-        name = svc.metadata.name
-        ann = svc.metadata.annotations or {}
-
-        if ns in _SKIP_NS or name in _SKIP_SVC:
+        try:
+            entry = _k8s_entry(svc, ingress_urls, fallback_host)
+        except Exception as exc:      # one odd object must not hide every other service
+            logger.debug("skipping a Service that could not be read: %s", exc)
             continue
-        if ann.get(f"{_ANN}/enabled") == "false":
-            continue
-
-        ports = svc.spec.ports or []
-        port_num = ports[0].port if ports else None
-        ext_port = None
-        url = safe_url(ann.get(f"{_ANN}/url"))
-
-        if not url:
-            key = f"{ns}/{name}"
-            if key in ingress_urls:
-                url = ingress_urls[key]
-            elif svc.spec.type == "NodePort" and ports:
-                node_port = ports[0].node_port
-                if node_port:
-                    ext_port = node_port
-                    url = f"http://localhost:{node_port}"
-            elif svc.spec.type == "LoadBalancer":
-                lb = svc.status.load_balancer if svc.status else None
-                ingress = (lb.ingress or []) if lb else []
-                if ingress:
-                    host = ingress[0].ip or ingress[0].hostname or fallback_host
-                    ext_port = port_num
-                    url = f"http://{host}:{port_num or 80}"
-            else:
-                continue   # ClusterIP without an Ingress is internal only
-
-        url = safe_url(url)
-        if not url:
-            continue
-
-        meta = _match_name(name)
-        results.append({
-            "name":  ann.get(f"{_ANN}/name")  or meta.get("name") or name,
-            "desc":  ann.get(f"{_ANN}/desc")  or "",
-            "url":   url,
-            "port":  ext_port,
-            "group": ann.get(f"{_ANN}/group") or ns,
-            "icon":  ann.get(f"{_ANN}/icon")  or meta.get("icon") or "🔧",
-        })
+        if entry:
+            results.append(entry)
     return results
+
+
+def _port_probe(host: str, port: int, protocol: str | None) -> dict:
+    """How to tell whether a bare port is alive. Never part of the API answer."""
+    return {
+        "kind": "port", "host": host, "port": int(port),
+        "proto": "udp" if str(protocol).upper() == "UDP" else "tcp",
+    }
+
+
+def _k8s_entry(svc, ingress_urls: dict[str, dict], fallback_host: str) -> dict | None:
+    """Turn one Kubernetes Service into a dashboard entry, or None to skip it."""
+    ns = svc.metadata.namespace
+    name = svc.metadata.name
+    ann = svc.metadata.annotations or {}
+
+    if ns in _SKIP_NS or name in _SKIP_SVC:
+        return None
+    if ann.get(f"{_ANN}/enabled") == "false":
+        return None
+
+    ports = svc.spec.ports or []
+    port_num = ports[0].port if ports else None
+    protocol = getattr(ports[0], "protocol", None) if ports else None
+    ext_port = None
+    probe = None            # stays None for a URL set by annotation: checked as given
+    url = safe_url(ann.get(f"{_ANN}/url"))
+
+    if not url:
+        key = f"{ns}/{name}"
+        if key in ingress_urls:
+            url = ingress_urls[key]["url"]
+            # Ask the ingress controller where it is published; on k3s that is
+            # this node, which is also the best guess for an IngressRoute.
+            probe = {"kind": "web", "address": ingress_urls[key].get("address") or _node_host()}
+        elif svc.spec.type == "NodePort" and ports:
+            node_port = ports[0].node_port
+            if node_port:
+                ext_port = node_port
+                url = f"http://localhost:{node_port}"
+                probe = _port_probe(_node_host(), node_port, protocol)
+        elif svc.spec.type == "LoadBalancer":
+            if _published_address(svc.status):
+                host = _published_address(svc.status) or fallback_host
+                ext_port = port_num
+                url = f"http://{host}:{port_num or 80}"
+                probe = _port_probe(host, port_num or 80, protocol)
+        else:
+            return None     # ClusterIP without an Ingress is internal only
+
+    url = safe_url(url)
+    if not url:
+        return None
+
+    meta = _match_name(name)
+    entry = {
+        "name":  ann.get(f"{_ANN}/name")  or meta.get("name") or name,
+        "desc":  ann.get(f"{_ANN}/desc")  or "",
+        "url":   url,
+        "port":  ext_port,
+        "group": ann.get(f"{_ANN}/group") or ns,
+        "icon":  ann.get(f"{_ANN}/icon")  or meta.get("icon") or "🔧",
+    }
+    if probe:
+        entry["_probe"] = probe
+    return entry
 
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
@@ -284,28 +343,35 @@ def _services_from_docker(containers: list[dict] | None = None) -> list[dict]:
         if labels.get(f"{_ANN}.enabled") == "false":
             continue
 
-        host_ports = sorted({
-            p["PublicPort"]
+        published = sorted({
+            (p["PublicPort"], str(p.get("Type") or "tcp"), p.get("IP") == "127.0.0.1")
             for p in (c.get("Ports") or [])
             if p.get("PublicPort") and p.get("IP") in ("0.0.0.0", "::", "127.0.0.1")
         })
-        port = host_ports[0] if host_ports else None
+        port, protocol, loopback_only = published[0] if published else (None, None, False)
 
         # A label URL with any other scheme is ignored, not rendered.
-        url = safe_url(labels.get(f"{_ANN}.url")) or (f"http://localhost:{port}" if port else "")
+        url = safe_url(labels.get(f"{_ANN}.url"))
+        probe = None            # a label URL is a real web URL
+        if not url and port:
+            url = f"http://localhost:{port}"
+            probe = _port_probe("127.0.0.1" if loopback_only else _node_host(), port, protocol)
         if not url:
             continue
 
         meta = _match_image(c.get("Image", ""))
         name_raw = (c.get("Names") or ["/unknown"])[0].lstrip("/")
-        services.append({
+        entry = {
             "name":  labels.get(f"{_ANN}.name")  or meta.get("name") or name_raw,
             "desc":  labels.get(f"{_ANN}.desc")  or "",
             "url":   url,
             "port":  port,
             "group": labels.get(f"{_ANN}.group") or "Docker",
             "icon":  labels.get(f"{_ANN}.icon")  or meta.get("icon") or "🐳",
-        })
+        }
+        if probe:
+            entry["_probe"] = probe
+        services.append(entry)
     return services
 
 
@@ -382,24 +448,189 @@ def port_names(services: list[dict]) -> dict[int, str]:
 
 
 # ─── Health ──────────────────────────────────────────────────────────────────
+#
+# What "online" means depends on what is known about the service:
+#
+#   web URL (Ingress, annotation, label, ConfigMap)
+#       it answers HTTP with a status below 500. Certificates are not verified:
+#       a self-signed service is up, whatever a browser thinks of its certificate.
+#       For an Ingress the request goes to the address the Ingress is published
+#       on, with the right Host header and TLS server name, so a host name that
+#       only resolves for the browsers on the LAN does not read as "offline".
+#   TCP port (NodePort, LoadBalancer, published container port)
+#       the port accepts a connection. If it also speaks HTTP, a 5xx answer
+#       still counts as offline. Game servers and the like do not speak HTTP.
+#   UDP port
+#       the port does not refuse. UDP has no handshake, so silence is the normal
+#       answer of a healthy server; a dead one is refused (ICMP port unreachable,
+#       which is also what kube-proxy sends for a Service without ready pods).
+
+_plain_tcp: dict[tuple[str, int], float] = {}     # ports known not to speak HTTP -> expiry
+
+
+def _ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
+
+
+async def _http_status(client: httpx.AsyncClient, url: str) -> tuple[int | None, int | None]:
+    """(status code, milliseconds), or (None, None) when no HTTP answer came."""
+    started = time.monotonic()
+    try:
+        # Headers are enough to decide; the body is never downloaded.
+        async with client.stream("GET", url, follow_redirects=True) as response:
+            return response.status_code, _ms(started)
+    except Exception:
+        return None, None
+
+
+async def _http_status_at(client: httpx.AsyncClient, url: str, address: str) -> tuple[int | None, int | None]:
+    """Like _http_status, but connect to `address` instead of resolving the URL's host.
+
+    Redirects are not followed: they would point back at the host name, and any
+    answer below 500 already says the service is up.
+    """
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return None, None
+    if not host or parts.scheme not in ("http", "https"):
+        return None, None
+    bracketed = f"[{address}]" if ":" in address else address
+    target = f"{parts.scheme}://{bracketed}:{port}{parts.path or '/'}"
+    if parts.query:
+        target += f"?{parts.query}"
+    started = time.monotonic()
+    try:
+        async with client.stream(
+            "GET", target,
+            headers={"Host": parts.netloc.rsplit("@", 1)[-1]},
+            extensions={"sni_hostname": host} if parts.scheme == "https" else {},
+            follow_redirects=False,
+        ) as response:
+            return response.status_code, _ms(started)
+    except Exception:
+        return None, None
+
+
+async def _web_alive(client: httpx.AsyncClient, url: str, address: str | None) -> tuple[bool, int | None]:
+    if address:
+        code, ms = await _http_status_at(client, url, address)
+        if code is not None:
+            return code < 500, ms
+    # No published address, or nothing answered there: go by the URL itself.
+    code, ms = await _http_status(client, url)
+    return code is not None and code < 500, ms
+
+
+async def _tcp_connect(host: str, port: int) -> int | None:
+    """Milliseconds to connect, or None when nothing real is behind the port."""
+    started = time.monotonic()
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), CONNECT_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return None
+    elapsed = _ms(started)
+    alive = True
+    try:
+        # A server waits for us to speak (or greets us). A proxy with nothing
+        # behind it accepts and hangs up at once: that is not "online".
+        alive = await asyncio.wait_for(reader.read(1), SETTLE) != b""
+    except asyncio.TimeoutError:
+        pass
+    except OSError:
+        alive = False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return elapsed if alive else None
+
+
+class _UdpProbe(asyncio.DatagramProtocol):
+    def __init__(self):
+        self.outcome: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    def _settle(self, value: str) -> None:
+        if not self.outcome.done():
+            self.outcome.set_result(value)
+
+    def datagram_received(self, data, addr):
+        self._settle("reply")
+
+    def error_received(self, exc):      # ICMP: port or host unreachable
+        self._settle("refused")
+
+
+async def _udp_alive(host: str, port: int) -> tuple[bool, int | None]:
+    """(alive, milliseconds). Alive unless the port refuses; ms only on a reply."""
+    loop = asyncio.get_running_loop()
+    started = time.monotonic()
+    try:
+        transport, probe = await loop.create_datagram_endpoint(_UdpProbe, remote_addr=(host, port))
+    except OSError:
+        return False, None
+    outcome = None
+    try:
+        # Two tiny datagrams: the refusal to the first one can get lost.
+        for wait in (0.3, UDP_WAIT - 0.3):
+            transport.sendto(b"\x00")
+            try:
+                outcome = await asyncio.wait_for(asyncio.shield(probe.outcome), wait)
+                break
+            except asyncio.TimeoutError:
+                continue
+    except OSError:
+        outcome = "refused"
+    finally:
+        transport.close()
+    if outcome == "refused":
+        return False, None
+    return True, _ms(started) if outcome == "reply" else None
+
+
+async def _port_alive(client: httpx.AsyncClient, probe: dict) -> tuple[bool, int | None]:
+    host, port = probe["host"], probe["port"]
+    if probe.get("proto") == "udp":
+        return await _udp_alive(host, port)
+
+    connect_ms = await _tcp_connect(host, port)
+    if connect_ms is None:
+        return False, None
+
+    # The port is open. Ask once whether it speaks HTTP; a port that does not is
+    # remembered, so a game server is not sent an HTTP request every poll.
+    now = time.monotonic()
+    key = (host, port)
+    if _plain_tcp.get(key, 0.0) > now:
+        return True, connect_ms
+    bracketed = f"[{host}]" if ":" in host else host
+    code, http_ms = await _http_status(client, f"http://{bracketed}:{port}/")
+    if code is None:
+        if len(_plain_tcp) > 512:
+            _plain_tcp.clear()
+        _plain_tcp[key] = now + PLAIN_TCP_TTL
+        return True, connect_ms
+    _plain_tcp.pop(key, None)
+    return code < 500, http_ms
+
 
 async def _check(client: httpx.AsyncClient, svc: dict) -> dict:
-    """Online means the service answered with a status below 500."""
+    probe = svc.get("_probe") if isinstance(svc.get("_probe"), dict) else {}
     url = svc.get("url") or ""
-    status, ping_ms = "offline", None
-    if url:
-        started = time.monotonic()
-        try:
-            # Headers are enough to decide; the body is never downloaded.
-            async with client.stream("GET", url, follow_redirects=True) as response:
-                if response.status_code < 500:
-                    status = "online"
-                    ping_ms = round((time.monotonic() - started) * 1000)
-        except Exception:
-            pass
-    return {**svc, "status": status, "ping_ms": ping_ms}
+    alive, ping_ms = False, None
+    if probe.get("kind") == "port":
+        alive, ping_ms = await _port_alive(client, probe)
+    elif url:
+        alive, ping_ms = await _web_alive(client, url, probe.get("address"))
+    public = {key: value for key, value in svc.items() if not key.startswith("_")}
+    return {**public, "status": "online" if alive else "offline", "ping_ms": ping_ms if alive else None}
 
 
 async def check_services(services: list[dict], transport=None) -> list[dict]:
-    async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT, transport=transport) as client:
+    # verify=False: this only asks "is it up?". Nothing secret is sent, and a
+    # self-signed certificate must not make a running service look dead.
+    async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT, verify=False, transport=transport) as client:
         return list(await asyncio.gather(*(_check(client, svc) for svc in services)))

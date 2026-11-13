@@ -4,7 +4,7 @@ import pytest
 
 from app import geo, network
 
-from .conftest import HOST_ADDRS, LAN_IFACE, ZT_IFACE, read_fixture
+from .conftest import HOST_ADDRS, LAN_IFACE, ZT_IFACE, FakeApi, read_fixture
 
 ip = ipaddress.ip_address
 
@@ -399,6 +399,11 @@ TAILSCALE_STATUS = {
             "HostName": "tablet", "TailscaleIPs": ["100.64.0.9"],
             "CurAddr": "", "Relay": "", "PeerRelay": "203.0.113.50:40000:7",
         },
+        "nodekey:ffff": {       # Android reports itself as "localhost"
+            "HostName": "localhost", "DNSName": "pixel-8.example-tailnet.ts.net.",
+            "TailscaleIPs": ["100.64.0.11"],
+            "CurAddr": "203.0.113.11:41641", "Relay": "fra",
+        },
     },
 }
 
@@ -412,6 +417,24 @@ def test_parse_tailscale_status():
     assert peers[ip("100.64.0.9")] == network.TailscalePeer("tablet", None, True)
     assert network.parse_tailscale_status({}) == {}
     assert network.parse_tailscale_status({"Peer": None}) == {}
+
+
+def test_tailscale_name_is_the_magicdns_label_not_the_device_hostname():
+    peers = network.parse_tailscale_status(TAILSCALE_STATUS)
+    assert peers[ip("100.64.0.11")].name == "pixel-8"       # not "localhost"
+    assert peers[ip("100.64.0.8")].name == "desk"            # no DNSName: HostName
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ({"DNSName": "nas.example-tailnet.ts.net.", "HostName": "DS920"}, "nas"),
+    ({"DNSName": "", "HostName": "desk"}, "desk"),
+    ({"HostName": "desk"}, "desk"),
+    ({"DNSName": None, "HostName": None}, ""),
+    ({"DNSName": 7, "HostName": ["x"]}, ""),
+    ({}, ""),
+])
+def test_tailscale_name_fallbacks(raw, expected):
+    assert network._tailscale_name(raw) == expected
 
 
 def test_tailscale_peers_get_names_and_endpoint_locations(nets):
@@ -463,9 +486,52 @@ def test_missing_tailscale_socket_is_skipped_silently(monkeypatch, tmp_path, cap
     assert caplog.records == []
 
 
+# ─── The real GeoLocator behind build_response ───────────────────────────────
+# FakeLocator cannot notice a locator that is never called. These use the real
+# class from an empty cache (the state after every restart) and fake only HTTP.
+
+def test_the_first_poll_geolocates_with_the_real_locator(flows_v4, nets):
+    api = FakeApi()
+    locator = geo.GeoLocator(fetch=api)
+    assert locator.cache_size() == 0
+
+    peers = by_ip(network.build_response(flows_v4, nets, locator=locator))
+    assert api.calls == [["203.0.113.9", "203.0.113.200", "203.0.113.201"]]
+    assert peers["203.0.113.9"]["geo"] == {
+        "lat": 50.0, "lng": 14.0, "city": "Prague", "country": "Czechia", "source": "ip-api",
+    }
+    assert peers["203.0.113.9"]["unlocated_reason"] is None
+
+    # The next poll is answered from the cache.
+    peers = by_ip(network.build_response(flows_v4, nets, locator=locator))
+    assert len(api.calls) == 1
+    assert peers["203.0.113.200"]["geo"]["source"] == "ip-api"
+
+
+def test_a_tailscale_endpoint_is_geolocated_with_the_real_locator(nets):
+    api = FakeApi()
+    response = network.build_response(
+        [flow("100.64.0.5", "100.64.0.1", dport=22)], nets,
+        tailscale=network.parse_tailscale_status(TAILSCALE_STATUS),
+        locator=geo.GeoLocator(fetch=api),
+    )
+    assert api.calls == [["203.0.113.7"]]
+    assert by_ip(response)["100.64.0.5"]["geo"] == {
+        "lat": 50.0, "lng": 14.0, "city": "Prague", "country": "Czechia",
+        "source": "tailscale-endpoint",
+    }
+
+
+def test_no_locator_means_no_lookup_and_pending(flows_v4, nets):
+    peers = by_ip(network.build_response(flows_v4, nets, locator=None))
+    assert peers["203.0.113.9"]["geo"] is None
+    assert peers["203.0.113.9"]["unlocated_reason"] == "pending"
+
+
 # ─── End to end through get_network() ────────────────────────────────────────
 
-def test_get_network_wires_everything(monkeypatch):
+@pytest.fixture
+def wired_host(monkeypatch):
     monkeypatch.setenv("DASHBOARD_LAN_IFACE", LAN_IFACE)
     monkeypatch.setenv("DASHBOARD_ZT_IFACE", ZT_IFACE)
     monkeypatch.setenv("DASHBOARD_SERVER_LAT", "48.946")
@@ -478,6 +544,9 @@ def test_get_network_wires_everything(monkeypatch):
     monkeypatch.setattr(network.services, "load_services", lambda: [{"name": "Jellyfin", "port": 8096}])
     monkeypatch.setattr(network, "_tailscale", network.services.TTLCache(
         0, lambda: network.parse_tailscale_status(TAILSCALE_STATUS)))
+
+
+def test_get_network_wires_everything(monkeypatch, wired_host):
     monkeypatch.setattr(network, "_locator", FakeLocator())
 
     response = network.get_network()
@@ -488,3 +557,22 @@ def test_get_network_wires_everything(monkeypatch):
     assert peers["198.51.100.20"]["net"] == "zerotier"
     assert peers["100.64.0.5"]["name"] == "laptop"
     assert peers["203.0.113.9"]["unlocated_reason"] == "pending"
+
+
+def test_the_locator_in_production_is_the_real_one():
+    assert type(network._locator) is geo.GeoLocator
+    assert network._locator._fetch is geo._http_fetch
+
+
+def test_get_network_geolocates_from_a_cold_start(monkeypatch, wired_host):
+    # Same object get_network() uses in production, minus the HTTP call.
+    api = FakeApi()
+    monkeypatch.setattr(network, "_locator", geo.GeoLocator(fetch=api))
+
+    peers = by_ip(network.get_network())
+    assert len(api.calls) == 1
+    assert "203.0.113.9" in api.calls[0] and "203.0.113.7" in api.calls[0]
+    assert not any(address.startswith(("100.", "192.0.2.", "198.51.100.", "10.")) for address in api.calls[0])
+    assert peers["203.0.113.9"]["geo"]["source"] == "ip-api"
+    assert peers["203.0.113.9"]["unlocated_reason"] is None
+    assert peers["100.64.0.5"]["geo"]["source"] == "tailscale-endpoint"

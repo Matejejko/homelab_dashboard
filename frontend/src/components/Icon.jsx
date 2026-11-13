@@ -17,6 +17,12 @@ const GLYPHS = {
   trash: '',
   grid: '',
   list: '',
+  cpu: '\uf4bc',
+  memory: '\u{f035b}',
+  network: '\uf0ec',
+  disk: '\uf0a0',
+  temperature: '\uf2c9',
+  clock: '\uf017',
 };
 
 export default function Icon({ name }) {

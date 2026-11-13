@@ -48,6 +48,8 @@
   --net-tailscale: #d2a8ff;
   --net-zerotier: #ffa657;
   --net-wan: #ff7b9c;
+  --chart-1: #3f8cf0;
+  --chart-2: #d9742c;
   --pin-ring: #0a0d12;
   --overlay: rgb(2 4 8 / 0.72);
   --shadow: 0 8px 28px rgb(0 0 0 / 0.5);
@@ -72,6 +74,8 @@
   --net-tailscale: #7c3aed;
   --net-zerotier: #b34700;
   --net-wan: #b4266f;
+  --chart-1: #0550ae;
+  --chart-2: #b34700;
   --pin-ring: #ffffff;
   --overlay: rgb(20 26 34 / 0.45);
   --shadow: 0 8px 28px rgb(20 26 34 / 0.18);
@@ -98,6 +102,8 @@
     --net-tailscale: #7c3aed;
     --net-zerotier: #b34700;
     --net-wan: #b4266f;
+    --chart-1: #0550ae;
+    --chart-2: #b34700;
     --pin-ring: #ffffff;
     --overlay: rgb(20 26 34 / 0.45);
     --shadow: 0 8px 28px rgb(20 26 34 / 0.18);
@@ -109,3 +115,10 @@
 .net--tailscale, .pin--tailscale, .pill--tailscale { --net: var(--net-tailscale); }
 .net--zerotier, .pin--zerotier, .pill--zerotier { --net: var(--net-zerotier); }
 .net--wan, .pin--wan, .pill--wan { --net: var(--net-wan); }
+
+/* Chart series. Blue and orange were checked with a palette validator against
+   each theme's surface: lightness band, contrast, and separation under
+   protanopia and deuteranopia. The dark steps are deliberately not the pastel
+   ones used for text. */
+.tone-1 { --tone: var(--chart-1); }
+.tone-2 { --tone: var(--chart-2); }

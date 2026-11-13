@@ -206,13 +206,59 @@ def _host_disks() -> list[dict]:
     return disks
 
 
+_cpu_model: str | None = None
+
+
+def cpu_model() -> str:
+    """The processor's name from the host's /proc/cpuinfo, or "" when it has none."""
+    global _cpu_model
+    if _cpu_model is not None:
+        return _cpu_model
+    model = ""
+    try:
+        text = (host_proc() / "cpuinfo").read_text(errors="replace")
+    except OSError:
+        return ""               # not cached: the file may be readable next time
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and value.strip():
+            found.setdefault(key.strip().lower(), value.strip())
+    # x86 says "model name"; ARM boards say "Model" or "Hardware".
+    for key in ("model name", "model", "hardware", "cpu model"):
+        if key in found:
+            model = found[key]
+            break
+    for noise in ("(R)", "(TM)", "(r)", "(tm)"):
+        model = model.replace(noise, "")
+    _cpu_model = " ".join(model.split())[:80]
+    return _cpu_model
+
+
+def _net_counters():
+    """(interface name, counters). The LAN interface when it is known, else every interface.
+
+    The total over every interface counts container traffic several times (veth,
+    bridge and physical NIC) and includes loopback, so the LAN interface is the
+    number that means something.
+    """
+    name = lan_iface()
+    if name:
+        per_nic = psutil.net_io_counters(pernic=True)
+        if name in per_nic:
+            return name, per_nic[name]
+    return "", psutil.net_io_counters()
+
+
 def get_system() -> dict:
     """Blocking (samples for one second). Call it off the event loop."""
-    net_before = psutil.net_io_counters()
+    iface, net_before = _net_counters()
     started = time.monotonic()
     cpu_pct = psutil.cpu_percent(interval=1)
-    net_after = psutil.net_io_counters()
+    iface_after, net_after = _net_counters()
     elapsed = max(time.monotonic() - started, 1e-3)
+    if iface_after != iface:          # the interface came or went mid-sample: no rate this time
+        iface, net_before = iface_after, net_after
 
     cpu_freq = psutil.cpu_freq()
     try:
@@ -235,6 +281,7 @@ def get_system() -> dict:
             "threads": psutil.cpu_count(logical=True),
             "freq_mhz": round(cpu_freq.current) if cpu_freq else None,
             "load_avg": load_avg,
+            "model": cpu_model(),
         },
         "ram": {
             "total_gb": round(mem.total / 1e9, 1),
@@ -251,7 +298,9 @@ def get_system() -> dict:
         },
         "temp_c": _host_temp(),
         "network": {
-            "rx_mb_s": round((net_after.bytes_recv - net_before.bytes_recv) / 1e6 / elapsed, 2),
-            "tx_mb_s": round((net_after.bytes_sent - net_before.bytes_sent) / 1e6 / elapsed, 2),
+            # 4 decimals: 0.1 kB/s steps, so a quiet line still draws as a line
+            "rx_mb_s": round(max(net_after.bytes_recv - net_before.bytes_recv, 0) / 1e6 / elapsed, 4),
+            "tx_mb_s": round(max(net_after.bytes_sent - net_before.bytes_sent, 0) / 1e6 / elapsed, 4),
+            "iface": iface,           # "" means the total over every interface
         },
     }

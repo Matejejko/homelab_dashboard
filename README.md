@@ -22,9 +22,9 @@ Browser → NodePort :30300 → frontend (unprivileged nginx + React)
 
 ## Features
 
-- **Host metrics**: CPU, RAM, temperature, uptime, network throughput and disk usage per real filesystem, read from the host's `/proc` and `/sys`.
+- **Host metrics**: live graphs of CPU, RAM and network throughput over the last five minutes, a storage card with one row per real filesystem, temperature and uptime, all read from the host's `/proc` and `/sys`.
 - **Service auto-discovery** from Kubernetes Services (NodePort, LoadBalancer, Ingress, Traefik `IngressRoute`), Docker containers with published ports, and an optional ConfigMap.
-- **Health checks**: every service is requested over HTTP. Any answer below 500 is "online"; a 5xx or no answer is "offline".
+- **Health checks** that fit the service: web pages are requested over HTTP, game servers and other non-web services are checked on their TCP or UDP port. See [How "online" is decided](#how-online-is-decided).
 - **Network map**: peers from the kernel's conntrack table (TCP and UDP, IPv4 and IPv6, inbound and outbound), classified as LAN / Tailscale / ZeroTier / WAN, with byte counters when the kernel provides them.
 - **Honest locations**: a peer is drawn only where real data puts it. Everything else is listed as "not on map" with the reason.
 - **Multi-network links**: each service card links to the server's LAN, ZeroTier and Tailscale address. The addresses are read live from the network interfaces.
@@ -224,6 +224,26 @@ sudo kubectl edit configmap homelab-services -n homelab
 [{ "name": "NAS", "url": "http://192.168.0.20:5000", "port": 5000, "group": "Storage", "icon": "💾", "desc": "" }]
 ```
 
+### How "online" is decided
+
+An HTTP request is the wrong question for a Minecraft or Valheim server, so the check depends on what the dashboard knows about the service:
+
+| Service | Check | Online when |
+|---|---|---|
+| **Web URL**: behind an Ingress or IngressRoute, or a URL from an annotation, label or the ConfigMap | HTTP GET | it answers with a status below 500 |
+| **TCP port**: NodePort, LoadBalancer or published container port | TCP connect, then one HTTP request to see whether it is a web page | the port accepts the connection (and, if it does speak HTTP, the status is below 500) |
+| **UDP port**: same sources, when the Service or container declares UDP | two one-byte datagrams | the port does not refuse them |
+
+Things worth knowing:
+
+- **TCP or UDP comes from the Service itself** (`spec.ports[0].protocol`), or from Docker's port type. The first port is the one shown and checked.
+- **UDP has no handshake.** A healthy game server silently ignores packets it does not understand, so silence counts as online. A stopped one is refused (ICMP port unreachable, which is also what kube-proxy sends for a Service with no ready pod), and that counts as offline. UDP services therefore show no latency.
+- **Certificates are not verified.** A service with a self-signed certificate is up, whatever a browser thinks of its certificate. The check sends nothing secret.
+- **An Ingress is checked where it is published, not where DNS points.** The request goes to the address Kubernetes reports for the Ingress (for a Traefik IngressRoute: this node), with the Ingress host as `Host` header and TLS server name. A host name that only your browsers can resolve, or a `*.sslip.io` name that your router's DNS filters out, therefore does not read as offline. Redirects are not followed there; any answer below 500 counts. If nothing answers at that address, the URL itself is tried.
+- **A port that accepts and hangs up at once is offline.** That is what a forwarder does when nothing is behind it.
+- A TCP port that turned out not to speak HTTP is remembered for ten minutes, so a game server is not sent an HTTP request on every poll.
+- For a service shown as a web URL, an open port is not enough: it has to answer HTTP. If a real web UI is wrongly treated as a bare port (or the other way round), set `homelab-dashboard/url` on the Service to say which it is.
+
 ### Labels and annotations
 
 **Docker:**
@@ -277,7 +297,7 @@ Direction is shown by the line, never by colour alone: dots moving toward the se
 |---|---|
 | WAN | At the position ip-api.com returns for the address. Until it has answered: *geolocation pending*. |
 | LAN | At the server. All LAN peers share one **Local network · N** badge on the server marker; its popup lists them. |
-| Tailscale, direct connection | At the position of the peer's public endpoint, read from `tailscaled`. The peer's Tailscale hostname is shown. |
+| Tailscale, direct connection | At the position of the peer's public endpoint, read from `tailscaled`. The peer is shown under its Tailscale machine name (the MagicDNS name, as `tailscale status` prints it), not under what the device calls itself: an Android phone reports `localhost`. |
 | Tailscale, relayed | Not on map: *relayed, no direct endpoint*. |
 | ZeroTier | Not on map: *private address*. There is no reliable way to tie a ZeroTier address to a physical endpoint, so none is guessed. |
 
@@ -306,6 +326,10 @@ No restart and no redeploy: the backend reads the file on every `/api/config` re
 
 **Locations are IP-geolocation estimates: city-level at best. Mobile and VPN users appear at their carrier or VPN exit.** A marker shows roughly where an address is registered, not where a person is.
 
+Anycast addresses are the worst case. Public DNS resolvers and much of the large CDNs answer from many places at once under one address, and such an address is drawn at the single place it is registered: `1.1.1.1` is drawn in Brisbane wherever your server is. A long line to another continent can be a connection to a machine in the next city.
+
+*geolocation pending* should clear within a poll or two (the dashboard asks every ten seconds, and 100 addresses are looked up per poll). If it stays, the server cannot reach ip-api.com on port 80. Check from the server with `curl -s http://ip-api.com/json/1.1.1.1` and look for `geolocation request` warnings in `sudo kubectl logs -n homelab deploy/homelab-backend`.
+
 ### Privacy: ip-api.com
 
 To place WAN peers and direct Tailscale endpoints, their **IP addresses are sent to ip-api.com over unencrypted HTTP** (the free endpoint offers no HTTPS). At most 100 addresses per poll are looked up, the busiest peers first; results are cached for 24 hours (up to 5,000 entries) and the service's rate-limit headers are honoured. If you do not want addresses to leave your network, block `ip-api.com` for this host: WAN peers then stay listed as *geolocation pending* and everything else keeps working.
@@ -320,9 +344,21 @@ Bytes per peer need `net.netfilter.nf_conntrack_acct=1`, which `deploy.sh` enabl
 - Markers of peers in the same city overlap. Use the peer list: clicking a row pans to the marker and opens its popup.
 - The map follows the data until you pan or zoom; **Fit** turns that back on.
 - You can add **manual pins** under Settings (hollow markers). They are positions you chose, not measurements.
-- Polling: system 5 s, network 10 s, services 15 s, addresses 60 s.
+- Polling: system about every 3 s, network 10 s, services 15 s, addresses 60 s.
 
 ---
+
+## System Graphs
+
+CPU, RAM and network each have a card with the current value and a graph of the last five minutes.
+
+- **The history lives in the browser.** The backend keeps none, so the graphs start empty after a reload and fill as polls arrive (one point about every 3 seconds). A gap in the line means no data arrived then, for example while the tab was in the background.
+- **Network is measured on the LAN interface** (`DASHBOARD_LAN_IFACE`), named on the card. A host-wide total would count container traffic several times (veth, bridge and physical interface) and include loopback. If the interface is not found, the card says "all interfaces" and shows that total instead.
+- **Scales:** CPU and RAM always run from 0 to 100%. Network scales to the busiest moment on screen, and the top of the scale is written on the plot. Download is the filled blue series, upload the orange line; both share one scale.
+- **Reading a value:** move the pointer over a graph, or focus it and use the arrow keys, to read the values at one moment.
+- **Storage** has its own card: used, total and free space, device and filesystem for every disk. The bar turns amber above 65% and red above 85%.
+
+`/api/system` gained two fields for these cards: `cpu.model` and `network.iface`. Everything that was there before is unchanged.
 
 ## Editing Services in the UI
 
@@ -444,7 +480,7 @@ homelab_dashboard/
 - **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a valid key. Put your key in `/var/lib/homelab-dashboard/carto-api-key`, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
 - **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
 - **Temperature** shows "n/a" when the host has no readable sensor.
-- **Self-signed HTTPS services** are reported offline: the health check verifies certificates.
+- **A UDP service shows "online" without a latency.** That is expected, see [How "online" is decided](#how-online-is-decided).
 - **Multi-node clusters**: the backend must run on the node whose hardware you care about. Add a `nodeSelector` in `02-backend.yaml`.
 - **Clearing localStorage** resets theme, groups, overrides, manual pins and the browser's own server location. It does not sign you out.
 - **Recreate** is the backend's update strategy because two `hostNetwork` pods cannot both bind port 8000.

@@ -61,6 +61,34 @@ HOST_ADDRS = {
 }
 
 
+class FakeApi:
+    """ip-api.com batch endpoint double."""
+
+    def __init__(self, status=200, headers=None, fail=()):
+        self.calls = []
+        self.status = status
+        self.headers = headers if headers is not None else {"X-Rl": "14", "X-Ttl": "60"}
+        self.fail = set(fail)
+        self.error = None
+
+    def __call__(self, ips):
+        self.calls.append(list(ips))
+        if self.error:
+            raise self.error
+        if self.status != 200:
+            return self.status, self.headers, []
+        body = []
+        for address in ips:
+            if address in self.fail:
+                body.append({"status": "fail", "message": "reserved range", "query": address})
+            else:
+                body.append({
+                    "status": "success", "query": address,
+                    "lat": 50.0, "lon": 14.0, "city": "Prague", "country": "Czechia",
+                })
+        return 200, self.headers, body
+
+
 def read_fixture(name: str) -> str:
     return (FIXTURES / name).read_text()
 

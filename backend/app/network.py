@@ -354,6 +354,19 @@ def _endpoint_ip(addr: str):
         return None
 
 
+def _tailscale_name(raw: dict) -> str:
+    """The machine name as `tailscale status` prints it.
+
+    That is the first label of the MagicDNS name, which is the name set in the
+    admin console. HostName is only what the device calls itself (an Android
+    phone reports "localhost"), so it is the fallback.
+    """
+    dns_name = raw.get("DNSName")
+    label = dns_name.split(".")[0] if isinstance(dns_name, str) else ""
+    host_name = raw.get("HostName")
+    return label or (host_name if isinstance(host_name, str) else "")
+
+
 def parse_tailscale_status(status: dict) -> dict:
     """Index ipnstate.Status peers by Tailscale address.
 
@@ -369,10 +382,10 @@ def parse_tailscale_status(status: dict) -> dict:
     for raw in raw_peers.values():
         if not isinstance(raw, dict):
             continue
-        name = raw.get("HostName") or str(raw.get("DNSName") or "").split(".")[0]
+        name = _tailscale_name(raw)
         endpoint = _endpoint_ip(raw.get("CurAddr") or "")
         relayed = endpoint is None and bool(raw.get("PeerRelay") or raw.get("Relay"))
-        info = TailscalePeer(name=str(name or ""), endpoint=endpoint, relayed=relayed)
+        info = TailscalePeer(name=name, endpoint=endpoint, relayed=relayed)
         for ip_text in raw.get("TailscaleIPs") or []:
             try:
                 peers[ipaddress.ip_address(ip_text)] = info
@@ -442,7 +455,7 @@ def build_response(
             lookups.append(str(peer.ip))
         elif peer.net == "tailscale" and (endpoint := direct_endpoint(peer)) is not None:
             lookups.append(str(endpoint))
-    located = locator.resolve(lookups) if (locator and lookups) else {}
+    located = locator.resolve(lookups) if (locator is not None and lookups) else {}
 
     lat, lng = server_location
     has_site = bool(lat or lng)

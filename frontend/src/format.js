@@ -51,3 +51,30 @@ export function loadLevel(percent) {
   if (percent > 65) return 'warn';
   return 'ok';
 }
+
+// /api/system reports MB/s; show kB/s below 1 MB/s, as people read throughput.
+export function formatRate(mbPerSecond) {
+  if (typeof mbPerSecond !== 'number' || !Number.isFinite(mbPerSecond)) return '–';
+  if (mbPerSecond >= 1) {
+    const digits = mbPerSecond >= 100 ? 0 : mbPerSecond >= 10 ? 1 : 2;
+    return `${mbPerSecond.toFixed(digits)} MB/s`;
+  }
+  const kb = mbPerSecond * 1000;
+  return `${kb >= 100 ? kb.toFixed(0) : kb.toFixed(1)} kB/s`;
+}
+
+export const formatPercent = (value) =>
+  (typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '–');
+
+// Smallest of 1, 2, 5 x 10^n that is not below `value`: a clean top for a y scale.
+export function niceCeil(value) {
+  if (!(value > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const fraction = value / magnitude;
+  const step = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return step * magnitude;
+}
+
+export function formatClock(timestamp) {
+  return new Date(timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
