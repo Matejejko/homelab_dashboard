@@ -145,13 +145,12 @@ Optionally restrict the disk panel:
 ### 3. Deploy
 
 ```bash
-chmod +x deploy.sh
 ./deploy.sh
 ```
 
 The script:
 
-1. Asks for the **server location** (it can look it up from your public IP through ip-api.com, or you enter coordinates). It is where the server and LAN peers are drawn.
+1. Asks for the **server location** (it can look it up from your public IP through ip-api.com, or you enter coordinates). It is where the server and LAN peers are drawn. The answer is saved on the server in `/var/lib/homelab-dashboard/server-location`. The script never edits a file of the repository, so your location cannot end up in a commit.
 2. Checks that the three configured **interfaces** exist and warns if one does not.
 3. Asks for the **connection timeout**: how long a closed connection stays visible (`net.netfilter.nf_conntrack_tcp_timeout_established`).
 4. Turns on **conntrack byte accounting** (`net.netfilter.nf_conntrack_acct=1`), persisted in `/etc/sysctl.d/99-homelab-conntrack-acct.conf`, and makes sure the `nf_conntrack` module loads at boot so that setting applies.
@@ -177,8 +176,8 @@ Environment variables of the backend, in `02-backend.yaml`:
 | `DASHBOARD_LAN_IFACE` | `enp7s0` | Interface whose IPv4 address is the server's LAN address. Its subnet defines "LAN". |
 | `DASHBOARD_TS_IFACE` | `tailscale0` | Tailscale interface. |
 | `DASHBOARD_ZT_IFACE` | `ztsjsl3deb` | ZeroTier interface. Its subnet defines "ZeroTier". |
-| `DASHBOARD_DATA_DIR` | `/data` | Holds `auth.json` and the one-time password. Mounted from `/var/lib/homelab-dashboard` on the host. |
-| `DASHBOARD_SERVER_LAT` / `DASHBOARD_SERVER_LNG` | set by `deploy.sh` | Server position on the map. `0` / `0` means not set. |
+| `DASHBOARD_DATA_DIR` | `/data` | Holds the files listed below. Mounted from `/var/lib/homelab-dashboard` on the host. |
+| `DASHBOARD_SERVER_LAT` / `DASHBOARD_SERVER_LNG` | *(not in the manifest)* | Optional. Server position on the map, used only when there is no `server-location` file. `0` / `0` means not set. |
 | `DASHBOARD_DISKS` | *(empty)* | Comma-separated mount points or device names; empty shows all. |
 | `HOST_PROC` / `HOST_SYS` / `HOST_ROOT` | `/host/proc` / `/host/sys` / `/host/root` | Where the host filesystems are mounted in the pod. |
 | `SERVICES_FILE` | `/config/services.json` | Manual services, mounted from the ConfigMap. |
@@ -190,8 +189,9 @@ Files in `/var/lib/homelab-dashboard` on the host (mounted at `/data`):
 | `auth.json` | The account: scrypt hash and salt. Delete it to reset the password. |
 | `initial-admin-password` | The one-time password. Exists only until the first password change. |
 | `carto-api-key` | Optional. Your CARTO Basemaps API key for the map tiles, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key). |
+| `server-location` | Where the server is drawn on the map: one line, latitude then longitude, for example `12.5 34.5`. Written by `deploy.sh`; you can also edit it by hand, and a change is picked up without a restart. |
 
-Per browser (localStorage): theme, groups, service overrides, manual map pins and, optionally, a server location that overrides the one from the manifest. Server addresses are never stored in the browser.
+Per browser (localStorage): theme, groups, service overrides, manual map pins and, optionally, a server location that overrides the one saved on the server. Server addresses are never stored in the browser.
 
 ---
 
@@ -395,7 +395,7 @@ It matches any host on port 80 by default. This is still plain HTTP: the same ru
 | `hostPID: true` | `/proc/1/mounts` is the host's mount table |
 | `/proc`, `/sys`, `/` mounted | CPU, RAM, temperature, disk usage; the Tailscale socket under `/run` |
 | `/var/run/docker.sock` | container discovery |
-| `/var/lib/homelab-dashboard` → `/data` | the account file survives pod restarts |
+| `/var/lib/homelab-dashboard` → `/data` | the account file, the map key and the server location survive pod restarts and stay out of the repository |
 | `privileged: true` | reading host `/proc` and `/sys`, running `conntrack` |
 
 A consequence of `hostNetwork` is that the API listens on the host's port 8000. That is why authentication is enforced in the backend and not in nginx.
@@ -479,6 +479,7 @@ homelab_dashboard/
 
 - **"API KEY REQUIRED" on the map** is CARTO's notice for tile requests without a valid key. Put your key in `/var/lib/homelab-dashboard/carto-api-key`, see [Map tiles need a CARTO API key](#map-tiles-need-a-carto-api-key).
 - **Sessions end when the backend restarts** (every `./deploy.sh`): sign in again.
+- **`git pull` refuses with "Your local changes to the following files would be overwritten"** on a checkout from before 1.0. Older versions of `deploy.sh` wrote the server location into `02-backend.yaml` and had to be made executable by hand, which left both files modified. Discard those two changes with `git checkout -- deploy.sh 02-backend.yaml`, pull again and run `./deploy.sh`: it takes the location over from the running deployment.
 - **Temperature** shows "n/a" when the host has no readable sensor.
 - **A UDP service shows "online" without a latency.** That is expected, see [How "online" is decided](#how-online-is-decided).
 - **Multi-node clusters**: the backend must run on the node whose hardware you care about. Add a `nodeSelector` in `02-backend.yaml`.

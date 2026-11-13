@@ -15,6 +15,22 @@ die()     { echo -e "${RED}[ERR]${NC}   $1"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_IP=$(hostname -I | awk '{print $1}')
 BACKEND_YAML="$SCRIPT_DIR/02-backend.yaml"
+# Everything personal to this server is kept here, on the host, and never in
+# the repository: the account, the optional map key and the server location.
+DATA_DIR="/var/lib/homelab-dashboard"
+LOCATION_FILE="$DATA_DIR/server-location"
+
+# Both are plain decimal numbers, latitude within 90 and longitude within 180.
+valid_location() {
+    local number='^-?[0-9]+([.][0-9]+)?$'
+    [[ "$1" =~ $number && "$2" =~ $number ]] || return 1
+    awk -v lat="$1" -v lng="$2" 'BEGIN { exit !(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) }'
+}
+
+# 0, 0 has always meant "not set".
+location_is_set() {
+    valid_location "$1" "$2" && awk -v lat="$1" -v lng="$2" 'BEGIN { exit !(lat != 0 || lng != 0) }'
+}
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 command -v docker  >/dev/null 2>&1 || die "docker not found. Install docker: https://docs.docker.com/engine/install/"
@@ -39,26 +55,43 @@ if command -v curl >/dev/null 2>&1; then
     fi
 fi
 
-# Read current values from yaml
-CUR_LAT=$(grep -A1 'DASHBOARD_SERVER_LAT' "$BACKEND_YAML" | grep 'value:' | head -1 | sed 's/.*value: *"\?\([^"]*\)"\?/\1/' || echo "0")
-CUR_LNG=$(grep -A1 'DASHBOARD_SERVER_LNG' "$BACKEND_YAML" | grep 'value:' | head -1 | sed 's/.*value: *"\?\([^"]*\)"\?/\1/' || echo "0")
+# Current value: the file on this host.
+CUR_LAT="" ; CUR_LNG=""
+if sudo test -f "$LOCATION_FILE"; then
+    read -r CUR_LAT CUR_LNG _ <<< "$(sudo cat "$LOCATION_FILE" 2>/dev/null | tr ',' ' ' | head -n 1)" || true
+fi
+if ! valid_location "$CUR_LAT" "$CUR_LNG"; then
+    # Before 1.0 the location sat in the Deployment's environment (and in
+    # 02-backend.yaml). Carry a running installation's value over once.
+    deployed_env() {
+        sudo kubectl get deployment homelab-backend -n homelab \
+            -o jsonpath="{.spec.template.spec.containers[0].env[?(@.name==\"$1\")].value}" 2>/dev/null || true
+    }
+    CUR_LAT=$(deployed_env DASHBOARD_SERVER_LAT)
+    CUR_LNG=$(deployed_env DASHBOARD_SERVER_LNG)
+fi
+if location_is_set "$CUR_LAT" "$CUR_LNG"; then
+    CUR_TEXT="(${CUR_LAT}, ${CUR_LNG})"
+else
+    CUR_LAT="" ; CUR_LNG="" ; CUR_TEXT="not set"
+fi
 
-if [ -n "$AUTO_LAT" ] && [ -n "$AUTO_LNG" ]; then
+if valid_location "$AUTO_LAT" "$AUTO_LNG"; then
     echo -e "  Auto-detected location: ${GREEN}${AUTO_CITY}, ${AUTO_COUNTRY}${NC} (${AUTO_LAT}, ${AUTO_LNG})"
-    echo -e "  Current in config:      (${CUR_LAT}, ${CUR_LNG})"
+    echo -e "  Current:                ${CUR_TEXT}"
     echo ""
     echo -e "  ${BOLD}1)${NC} Use auto-detected: ${AUTO_CITY} (${AUTO_LAT}, ${AUTO_LNG})"
     echo -e "  ${BOLD}2)${NC} Enter manually"
-    echo -e "  ${BOLD}3)${NC} Keep current (${CUR_LAT}, ${CUR_LNG})"
+    echo -e "  ${BOLD}3)${NC} Keep current: ${CUR_TEXT}"
     echo ""
     read -rp "  Choose [1/2/3] (default: 1): " LOC_CHOICE
     LOC_CHOICE=${LOC_CHOICE:-1}
 else
     echo -e "  Could not auto-detect location."
-    echo -e "  Current in config: (${CUR_LAT}, ${CUR_LNG})"
+    echo -e "  Current: ${CUR_TEXT}"
     echo ""
     echo -e "  ${BOLD}1)${NC} Enter manually"
-    echo -e "  ${BOLD}2)${NC} Keep current (${CUR_LAT}, ${CUR_LNG})"
+    echo -e "  ${BOLD}2)${NC} Keep current: ${CUR_TEXT}"
     echo ""
     read -rp "  Choose [1/2] (default: 2): " LOC_CHOICE
     if [ "$LOC_CHOICE" = "1" ]; then
@@ -75,26 +108,33 @@ case "$LOC_CHOICE" in
         success "Using auto-detected: ${AUTO_CITY} (${NEW_LAT}, ${NEW_LNG})"
         ;;
     2)
-        read -rp "  Latitude: " NEW_LAT
-        read -rp "  Longitude: " NEW_LNG
-        if [ -z "$NEW_LAT" ] || [ -z "$NEW_LNG" ]; then
-            warn "Empty input — keeping current values"
+        read -rp "  Latitude (-90 to 90): " NEW_LAT
+        read -rp "  Longitude (-180 to 180): " NEW_LNG
+        if valid_location "$NEW_LAT" "$NEW_LNG"; then
+            success "Using manual: (${NEW_LAT}, ${NEW_LNG})"
+        else
+            warn "Not a latitude and a longitude (decimal numbers, e.g. 12.5 and 34.5) — keeping current: ${CUR_TEXT}"
             NEW_LAT="$CUR_LAT"
             NEW_LNG="$CUR_LNG"
-        else
-            success "Using manual: (${NEW_LAT}, ${NEW_LNG})"
         fi
         ;;
     *)
         NEW_LAT="$CUR_LAT"
         NEW_LNG="$CUR_LNG"
-        success "Keeping current: (${NEW_LAT}, ${NEW_LNG})"
+        success "Keeping current: ${CUR_TEXT}"
         ;;
 esac
 
-# Update 02-backend.yaml with new coordinates
-sed -i "/DASHBOARD_SERVER_LAT/{n;s/value: .*/value: \"${NEW_LAT}\"/}" "$BACKEND_YAML"
-sed -i "/DASHBOARD_SERVER_LNG/{n;s/value: .*/value: \"${NEW_LNG}\"/}" "$BACKEND_YAML"
+# Store it on the host. The backend reads the file on every request, and
+# 02-backend.yaml is never edited, so the checkout stays clean.
+if location_is_set "$NEW_LAT" "$NEW_LNG"; then
+    sudo mkdir -p "$DATA_DIR"
+    printf '%s %s\n' "$NEW_LAT" "$NEW_LNG" | sudo tee "$LOCATION_FILE" >/dev/null
+    sudo chmod 600 "$LOCATION_FILE"
+    success "Location saved to $LOCATION_FILE"
+else
+    warn "No server location is set: the server and LAN peers will not be drawn on the map"
+fi
 
 # --- Network interfaces ---
 # The backend reads the server's LAN, Tailscale and ZeroTier addresses live from
@@ -207,9 +247,9 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 echo -e "  🌐 Dashboard (NodePort):  ${CYAN}http://$NODE_IP:30300${NC}"
 echo -e "  🌐 Dashboard (Ingress):   ${CYAN}http://$NODE_IP${NC}  (if ingress applied)"
-echo -e "  ⚙️  API (internal only):   homelab-backend.homelab.svc:8000"
+echo -e "  ⚙️  API:                   ${CYAN}http://$NODE_IP:8000${NC}  (host port, behind the same login)"
 echo ""
-INITIAL_LOGIN_FILE="/var/lib/homelab-dashboard/initial-admin-password"
+INITIAL_LOGIN_FILE="$DATA_DIR/initial-admin-password"
 if sudo test -f "$INITIAL_LOGIN_FILE"; then
     echo -e "  ${BOLD}First login${NC}"
     echo -e "    Username: ${CYAN}admin${NC}"

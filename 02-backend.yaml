@@ -99,18 +99,17 @@ spec:
               value: "tailscale0"
             - name: DASHBOARD_ZT_IFACE
               value: "ztsjsl3deb"
-            # Where auth.json and the one-time initial password are kept
+            # Where auth.json and the one-time initial password are kept, and
+            # the optional carto-api-key and server-location files
             - name: DASHBOARD_DATA_DIR
               value: /data
             # Disk filter — comma-separated mount points or device names.
             # Empty = show all real block devices. Example: "/, /home, /data"
             - name: DASHBOARD_DISKS
               value: ""
-            # Server location for the world map (latitude, longitude)
-            - name: DASHBOARD_SERVER_LAT
-              value: "48.946"
-            - name: DASHBOARD_SERVER_LNG
-              value: "20.566"
+            # The server location for the map is NOT set here. deploy.sh stores
+            # it on the host in /var/lib/homelab-dashboard/server-location, so
+            # this file stays the same for everyone and holds nothing personal.
 
           volumeMounts:
             # Host /proc and /sys — psutil reads CPU, RAM, temp, uptime from here
@@ -132,7 +131,8 @@ spec:
             # Docker socket — for container auto-discovery
             - name: docker-sock
               mountPath: /var/run/docker.sock
-            # Login state (auth.json), kept on the host across pod restarts
+            # Login state (auth.json) and the other files of
+            # /var/lib/homelab-dashboard, kept on the host across pod restarts
             - name: data
               mountPath: /data
 
@@ -193,8 +193,10 @@ metadata:
 spec:
   selector:
     app: homelab-backend
-  # ClusterIP is enough — the frontend nginx proxy talks to this internally.
-  # The backend never needs to be directly exposed to the browser.
+  # ClusterIP is all the frontend's nginx proxy needs.
+  # This Service does not hide the API: the pod uses hostNetwork, so the
+  # backend also answers on port 8000 of the host. That is why the login is
+  # enforced in the backend itself and not in nginx.
   type: ClusterIP
   ports:
     - name: http

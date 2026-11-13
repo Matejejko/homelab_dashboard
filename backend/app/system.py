@@ -28,7 +28,8 @@ def host_root() -> Path:
 
 
 def data_dir() -> Path:
-    """Persistent state: the account file and, optionally, the map tile key."""
+    """Persistent state: the account file and, optionally, the map tile key and
+    the server location."""
     return Path(os.environ.get("DASHBOARD_DATA_DIR", "/data"))
 
 
@@ -69,8 +70,51 @@ def _coord(env_name: str, limit: float) -> float:
     return value if -limit <= value <= limit else 0.0
 
 
+LOCATION_FILE = "server-location"
+_warned_bad_location = False
+
+
+def _location_from_file() -> tuple[float, float] | None:
+    """(lat, lng) from $DASHBOARD_DATA_DIR/server-location, or None.
+
+    One line, "LAT LNG" or "LAT,LNG". deploy.sh writes it there so that where
+    the server stands is kept on the host and never in the repository.
+    """
+    global _warned_bad_location
+    try:
+        with (data_dir() / LOCATION_FILE).open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(256)
+    except OSError:
+        return None
+    parts = text.replace(",", " ").split()
+    if not parts:
+        return None
+    try:
+        if len(parts) != 2:
+            raise ValueError
+        lat, lng = float(parts[0]), float(parts[1])
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):      # also rejects nan
+            raise ValueError
+    except ValueError:
+        if not _warned_bad_location:
+            _warned_bad_location = True
+            logger.warning(
+                "%s is ignored: it must hold a latitude and a longitude, e.g. 12.5 34.5", LOCATION_FILE,
+            )
+        return None
+    _warned_bad_location = False
+    return lat, lng
+
+
 def server_location() -> tuple[float, float]:
-    """Configured (lat, lng). (0, 0) means "not configured"."""
+    """Configured (lat, lng). (0, 0) means "not configured".
+
+    Read on every call: the server-location file first, then the
+    DASHBOARD_SERVER_LAT / DASHBOARD_SERVER_LNG environment variables.
+    """
+    from_file = _location_from_file()
+    if from_file is not None:
+        return from_file
     return _coord("DASHBOARD_SERVER_LAT", 90.0), _coord("DASHBOARD_SERVER_LNG", 180.0)
 
 

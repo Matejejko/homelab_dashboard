@@ -37,12 +37,12 @@ def test_config_is_resolved_from_env_named_interfaces_on_every_call(monkeypatch)
     monkeypatch.setenv("DASHBOARD_LAN_IFACE", LAN_IFACE)
     monkeypatch.setenv("DASHBOARD_TS_IFACE", TS_IFACE)
     monkeypatch.setenv("DASHBOARD_ZT_IFACE", "zt-not-there")
-    monkeypatch.setenv("DASHBOARD_SERVER_LAT", "48.946")
-    monkeypatch.setenv("DASHBOARD_SERVER_LNG", "20.566")
+    monkeypatch.setenv("DASHBOARD_SERVER_LAT", "12.345")
+    monkeypatch.setenv("DASHBOARD_SERVER_LNG", "34.567")
 
     assert system.get_config() == {
         "lan_ip": "192.0.2.10", "zt_ip": "", "ts_ip": "100.64.0.1",
-        "server_lat": 48.946, "server_lng": 20.566, "tile_key": "",
+        "server_lat": 12.345, "server_lng": 34.567, "tile_key": "",
     }
 
     # The interface comes up later / changes address: the next call sees it.
@@ -61,6 +61,67 @@ def test_config_without_any_env(monkeypatch):
     assert system.get_config() == {
         "lan_ip": "", "zt_ip": "", "ts_ip": "", "server_lat": 0.0, "server_lng": 0.0, "tile_key": "",
     }
+
+
+# ─── Server location file ────────────────────────────────────────────────────
+# deploy.sh keeps the location on the host so that it never sits in the repository.
+
+@pytest.fixture
+def location_env(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_SERVER_LAT", "1.5")
+    monkeypatch.setenv("DASHBOARD_SERVER_LNG", "2.5")
+    monkeypatch.setattr(system, "_warned_bad_location", False)
+
+
+@pytest.mark.parametrize("content, expected", [
+    ("12.345 34.567\n", (12.345, 34.567)),          # what deploy.sh writes
+    ("12.345,34.567", (12.345, 34.567)),
+    ("  -33.9 ,\t151.2 \n\n", (-33.9, 151.2)),
+    ("12.345\n34.567\n", (12.345, 34.567)),
+    ("90 -180", (90.0, -180.0)),
+    ("0 0\n", (0.0, 0.0)),                           # an explicit "not set" still wins over the env
+])
+def test_location_is_read_from_the_data_dir(data_dir, location_env, content, expected):
+    (data_dir / "server-location").write_text(content)
+    assert system.server_location() == expected
+    config = system.get_config()
+    assert (config["server_lat"], config["server_lng"]) == expected
+
+
+def test_location_falls_back_to_the_environment_without_the_file(location_env):
+    assert system.server_location() == (1.5, 2.5)
+
+
+@pytest.mark.parametrize("content", [
+    "", "\n\n", "12.345", "12.345 34.567 8", "north east", "91 10", "10 181", "nan nan", "inf 0",
+    "12,345 34,567",                                 # decimal commas: four numbers, not two
+])
+def test_an_unusable_location_file_is_ignored(data_dir, location_env, content):
+    (data_dir / "server-location").write_text(content)
+    assert system.server_location() == (1.5, 2.5)
+
+
+def test_location_changes_are_picked_up_without_a_restart(data_dir, location_env):
+    path = data_dir / "server-location"
+    path.write_text("10 20\n")
+    assert system.server_location() == (10.0, 20.0)
+    path.write_text("30 40\n")
+    assert system.server_location() == (30.0, 40.0)
+    path.unlink()
+    assert system.server_location() == (1.5, 2.5)
+
+
+def test_a_bad_location_file_warns_once_and_never_logs_its_content(data_dir, location_env, caplog):
+    path = data_dir / "server-location"
+    with caplog.at_level(logging.DEBUG):
+        path.write_text("12.345 34.567\n")
+        system.get_config()
+        path.write_text("12.345 somewhere-private\n")
+        system.get_config()
+        system.get_config()
+    assert "12.345" not in caplog.text and "somewhere-private" not in caplog.text
+    warnings = [r for r in caplog.records if r.name == "homelab.system"]
+    assert len(warnings) == 1 and "server-location is ignored" in warnings[0].getMessage()
 
 
 # ─── Map tile key file ───────────────────────────────────────────────────────

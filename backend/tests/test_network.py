@@ -203,7 +203,7 @@ def test_zerotier_range_comes_from_the_interface_not_a_constant():
 # ─── Aggregation and response ────────────────────────────────────────────────
 
 def test_response_shape_and_ipv4_peers(flows_v4, nets):
-    response = network.build_response(flows_v4, nets, server_location=(48.9, 20.5))
+    response = network.build_response(flows_v4, nets, server_location=(12.5, 34.5))
     assert set(response) == {"accounting", "truncated", "total_peers", "peers"}
     assert response["accounting"] is True
     assert response["truncated"] is False
@@ -247,7 +247,7 @@ def test_docker_and_pod_addresses_are_never_peers(flows_v4, flows_v6, nets):
 
 
 def test_ipv6_peers(flows_v6, nets):
-    peers = by_ip(network.build_response(flows_v6, nets, server_location=(48.9, 20.5)))
+    peers = by_ip(network.build_response(flows_v6, nets, server_location=(12.5, 34.5)))
     assert set(peers) == {
         "2001:db8:ffff::9", "2001:db8:ffff::53", "2001:db8:a::50",
         "fd7a:115c:a1e0::5", "fd00:1::5", "2001:db8:ffff::200",
@@ -309,8 +309,8 @@ def test_truncates_to_200_ranked_peers(nets):
 
 
 def test_identical_input_gives_identical_output(flows_v4, flows_v6, nets):
-    first = network.build_response(flows_v4 + flows_v6, nets, server_location=(48.9, 20.5))
-    second = network.build_response(list(reversed(flows_v4 + flows_v6)), nets, server_location=(48.9, 20.5))
+    first = network.build_response(flows_v4 + flows_v6, nets, server_location=(12.5, 34.5))
+    second = network.build_response(list(reversed(flows_v4 + flows_v6)), nets, server_location=(12.5, 34.5))
     assert first == second
 
 
@@ -327,9 +327,9 @@ def test_services_are_named_for_inbound_ports_only(nets):
 # ─── Locations ───────────────────────────────────────────────────────────────
 
 def test_lan_peers_sit_at_the_server_site(flows_v4, nets):
-    peers = by_ip(network.build_response(flows_v4, nets, server_location=(48.946, 20.566)))
+    peers = by_ip(network.build_response(flows_v4, nets, server_location=(12.345, 34.567)))
     assert peers["192.0.2.50"]["geo"] == {
-        "lat": 48.946, "lng": 20.566, "city": "", "country": "", "source": "server-site",
+        "lat": 12.345, "lng": 34.567, "city": "", "country": "", "source": "server-site",
     }
     assert peers["192.0.2.50"]["unlocated_reason"] is None
 
@@ -364,7 +364,7 @@ def test_only_wan_addresses_are_sent_for_geolocation_busiest_first(flows_v4, net
 
 
 def test_zerotier_peers_are_never_placed(flows_v4, nets):
-    peer = by_ip(network.build_response(flows_v4, nets, server_location=(48.9, 20.5)))["198.51.100.20"]
+    peer = by_ip(network.build_response(flows_v4, nets, server_location=(12.5, 34.5)))["198.51.100.20"]
     assert peer["net"] == "zerotier"
     assert peer["geo"] is None
     assert peer["unlocated_reason"] == "private"
@@ -443,7 +443,7 @@ def test_tailscale_peers_get_names_and_endpoint_locations(nets):
         "203.0.113.7": {"lat": 50.08, "lng": 14.43, "city": "Prague", "country": "Czechia"},
     })
     response = network.build_response(
-        flows, nets, server_location=(48.9, 20.5),
+        flows, nets, server_location=(12.5, 34.5),
         tailscale=network.parse_tailscale_status(TAILSCALE_STATUS), locator=locator,
     )
     peers = by_ip(response)
@@ -473,7 +473,7 @@ def test_tailscale_peers_get_names_and_endpoint_locations(nets):
 
 
 def test_tailscale_without_localapi_is_unlocated_not_guessed(flows_v4, nets):
-    peer = by_ip(network.build_response(flows_v4, nets, server_location=(48.9, 20.5)))["100.64.0.5"]
+    peer = by_ip(network.build_response(flows_v4, nets, server_location=(12.5, 34.5)))["100.64.0.5"]
     assert peer["name"] == ""
     assert peer["geo"] is None
     assert peer["unlocated_reason"] == "private"
@@ -534,8 +534,8 @@ def test_no_locator_means_no_lookup_and_pending(flows_v4, nets):
 def wired_host(monkeypatch):
     monkeypatch.setenv("DASHBOARD_LAN_IFACE", LAN_IFACE)
     monkeypatch.setenv("DASHBOARD_ZT_IFACE", ZT_IFACE)
-    monkeypatch.setenv("DASHBOARD_SERVER_LAT", "48.946")
-    monkeypatch.setenv("DASHBOARD_SERVER_LNG", "20.566")
+    monkeypatch.setenv("DASHBOARD_SERVER_LAT", "12.345")
+    monkeypatch.setenv("DASHBOARD_SERVER_LNG", "34.567")
     monkeypatch.setattr(network.psutil, "net_if_addrs", lambda: HOST_ADDRS)
     monkeypatch.setattr(
         network, "_run_conntrack",
